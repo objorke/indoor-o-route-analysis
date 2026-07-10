@@ -24,6 +24,6 @@
     "@types/three": "^0.182.0",
     "jsdom": "^27.4.0",
     "typescript": "^5",
-    "vitest": "^4.0.17"
+    "vitest": "^4.1.0"
   }
 }
