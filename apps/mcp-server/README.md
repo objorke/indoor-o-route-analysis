@@ -157,7 +157,7 @@ What's the difficulty breakdown for "Bana 1" using the alpha@0.1 scoring model?
 Here's a complete example conversation with the MCP server:
 
 ```
-User: Load the event from /path/to/public/examples/2026-02-01 OK Moss indoor challenge.json
+User: Load the event from /path/to/test-data/events/2026-02-01 OK Moss indoor challenge.json
 Assistant: ✅ Loaded event: OK Moss indoor challenge
 Date: 2026-02-01
 Courses: 4

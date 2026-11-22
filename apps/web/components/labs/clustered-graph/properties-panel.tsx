@@ -6,6 +6,7 @@ import { ScrollArea } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import {
   computeClusteredGraph,
+  createLevelLookup,
   assignClusterColors,
   computeClusterGraphEdges,
   clusterGraphToMermaid,
@@ -32,20 +33,26 @@ interface ClusteredGraphPanelProps {
  */
 export default function ClusteredGraphPanel({ onClusteredGraphChange }: ClusteredGraphPanelProps) {
   const { selectedEvent } = useAppData();
-  const edges = selectedEvent?.raceCourses?.[0]?.edges ?? [];
+  const raceCourse = selectedEvent?.raceCourses?.[0];
+  const edges = raceCourse?.edges ?? [];
 
   const [clusters, setClusters] = useState<string[] | null>(null);
   const [clusterOf, setClusterOf] = useState<Record<string, string>>({});
   const [clusterColors, setClusterColors] = useState<Record<string, string>>({});
 
   const runClustering = useCallback(() => {
-    const clustered = computeClusteredGraph(edges);
+    const levelOf = createLevelLookup({
+      nodes: raceCourse?.vertices ?? [],
+      controls: raceCourse?.controls ?? [],
+      polygons: raceCourse?.polygons ?? [],
+    });
+    const clustered = computeClusteredGraph(edges, levelOf);
     const colors = assignClusterColors(clustered.clusters);
     setClusters(clustered.clusters);
     setClusterOf(clustered.clusterOf);
     setClusterColors(colors);
     onClusteredGraphChange?.({ clusterOf: clustered.clusterOf, clusterColors: colors });
-  }, [edges, onClusteredGraphChange]);
+  }, [edges, raceCourse, onClusteredGraphChange]);
 
   // Clear the overlay when this lab unmounts (switching to another lab).
   useEffect(() => () => onClusteredGraphChange?.(null), [onClusteredGraphChange]);
@@ -61,14 +68,14 @@ export default function ClusteredGraphPanel({ onClusteredGraphChange }: Clustere
     <div className="flex flex-col h-full overflow-hidden">
       <div className="p-4 border-b border-border space-y-3">
         <p className="text-sm text-muted-foreground">
-          Groups the graph into same-floor regions (connected via ordinary corridors, not stairs)
-          and colors the map accordingly.
+          Groups the graph into same-floor regions (two-way edges within one floor; nodes on
+          different floors and one-way edges never merge) and colors the map accordingly.
         </p>
         <Button onClick={runClustering} className="w-full gap-2" disabled={edges.length === 0}>
           <Waypoints className="w-4 h-4" /> Run Clustering
         </Button>
         {edges.length === 0 && (
-          <p className="text-sm text-destructive">No graph edges found. Please create a graph in the Graph Editor first.</p>
+          <p className="text-sm text-destructive">No graph edges found. Please create a graph in the Graph view first.</p>
         )}
       </div>
 

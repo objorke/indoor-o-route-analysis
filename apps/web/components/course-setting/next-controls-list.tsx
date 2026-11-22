@@ -1,26 +1,22 @@
 "use client"
 
-import { useEffect, useState, useMemo } from "react"
-import { RouteAnalyzer, getDifficultyCategory } from "@indoor-o-route-analysis/core"
-import { ScoringModelRegistry } from "@indoor-o-route-analysis/core"
+import { useEffect, useState, useMemo, useRef } from "react"
+import { getDifficultyCategory, analyzeNextLegs, getEventScoringModel } from "@indoor-o-route-analysis/core"
+import { useEventRouteAnalyzer } from "@indoor-o-route-analysis/ui"
+import type { EventData } from "@indoor-o-route-analysis/core"
 import { DifficultyTag } from "@/components/route-analysis/difficulty-tag"
 import type { DifficultyCategory } from "@indoor-o-route-analysis/core"
-import type { Control } from "@indoor-o-route-analysis/core"
-import type { Node } from "@indoor-o-route-analysis/core";
-import type { Edge } from "@indoor-o-route-analysis/core";
 import { Button } from "@indoor-o-route-analysis/ui"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@indoor-o-route-analysis/ui"
 import { Toggle } from "@indoor-o-route-analysis/ui"
 import { Progress } from "@indoor-o-route-analysis/ui";
-import { Target, Plus, X } from "lucide-react"
+import { Target, Plus, X, Loader2, Square, RotateCw } from "lucide-react"
 
 interface NextControlsListProps {
+  /** Event to analyse; the route analyzer is set up from it like in every other view. */
+  event: EventData
+  courseId: string | null
   lastControlId: string
-  controls: Control[]
-  nodes: Node[]
-  edges: Edge[]
-  mapScale: number
-  scoringModelId?: string
   excludeControlIds: string[]
   onNavigateTo: (controlId: string) => void
   onAddToCourse: (controlCode: string) => void
@@ -49,12 +45,9 @@ const DIFFICULTY_LEVELS = [
 ]
 
 export function NextControlsList({ 
+  event,
+  courseId,
   lastControlId, 
-  controls,
-  nodes,
-  edges,
-  mapScale,
-  scoringModelId,
   excludeControlIds, 
   onNavigateTo, 
   onAddToCourse 
@@ -67,88 +60,82 @@ export function NextControlsList({
   const [lengthFilter, setLengthFilter] = useState<string>('all')
   const [difficultyFilters, setDifficultyFilters] = useState<string[]>([])
 
-  const scoringModel = useMemo(() => {
-    return scoringModelId ? ScoringModelRegistry.getModel(scoringModelId) : undefined
-  }, [scoringModelId])
+  const raceCourse = event.raceCourses?.[0]
+  const controls = useMemo(() => raceCourse?.controls ?? [], [raceCourse?.controls])
+  const scoringModel = getEventScoringModel(event)
+  const analyzer = useEventRouteAnalyzer(event, { courseId, scoringModel })
+
+  // Bumped by the Restart button to re-run the analysis after a stop.
+  const [runId, setRunId] = useState(0);
+  const abortRef = useRef<AbortController | null>(null);
+  const [stopped, setStopped] = useState<{ done: number; total: number } | null>(null);
 
   useEffect(() => {
-    if (!lastControlId) return;
+    if (!lastControlId || !analyzer) return;
 
     // Clear previous results when starting new calculation
     // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: reset state before async calculation
     setAnalyzedControls([]);
+    setStopped(null);
 
-    let isCancelled = false;
+    const lastControl = (controls ?? []).find((c) => c.id === lastControlId);
+    if (!lastControl) {
+      setIsLoading(false);
+      return;
+    }
+
+    const abort = new AbortController();
+    abortRef.current = abort;
     setIsLoading(true);
     setProgress(0);
 
-    const calculateRoutes = async () => {
-      // Small delay to allow UI to render loading state
-      await new Promise((resolve) => setTimeout(resolve, 50));
-      if (isCancelled) return;
+    const candidateIds = (controls ?? [])
+      .filter((c) => !excludeControlIds.includes(c.id) && c.id !== lastControlId)
+      .map((c) => c.id);
 
-      const analyzer = new RouteAnalyzer(controls ?? [], nodes ?? [], edges ?? [], mapScale ?? 1500, scoringModel);
+    // Accumulate results locally and keep the list sorted while it grows
+    const currentResults: AnalyzedControl[] = [];
+    let lastProgress = { done: 0, total: candidateIds.length };
 
-      const lastControl = (controls ?? []).find((c) => c.id === lastControlId);
-      if (!lastControl) {
-        if (!isCancelled) setIsLoading(false);
-        return;
-      }
-
-      const potentialControls = (controls ?? []).filter(
-        (c) => !excludeControlIds.includes(c.id) && c.id !== lastControlId,
-      );
-
-      // Use a local variable to accumulate results for sorting context
-      const currentResults: AnalyzedControl[] = [];
-      const BATCH_SIZE = 1;
-
-      for (let i = 0; i < potentialControls.length; i += BATCH_SIZE) {
-        if (isCancelled) return;
-
-        const batch = potentialControls.slice(i, i + BATCH_SIZE);
-
-        for (const targetControl of batch) {
-          try {
-            const routes = analyzer.findAlternativePathsBetweenControls(lastControl.id, targetControl.id, 1);
-            if (routes.length > 0) {
-              const difficulty = routes[0].difficulty;
-              const newResult = {
-                controlId: targetControl.id,
-                distance: routes[0].distance,
-                difficulty: difficulty,
-                difficultyCategory: getDifficultyCategory(difficulty, scoringModel),
-              };
-              currentResults.push(newResult);
-            }
-          } catch (e) {
-            console.error(`Error calculating route to ${targetControl.id}`, e);
-          }
-        }
-
-        if (!isCancelled) {
-          // Sort continuously so the list looks stable and ordered
-          currentResults.sort((a, b) => a.distance - b.distance);
-          // Create a new array reference to trigger re-render
-          setAnalyzedControls([...currentResults]);
-          setProgress(Math.round(((i + batch.length) / potentialControls.length) * 100));
-        }
-
-        await new Promise((resolve) => setTimeout(resolve, 10));
-      }
-
-      if (!isCancelled) {
-        setIsLoading(false);
-      }
-    };
-
-    calculateRoutes();
+    analyzeNextLegs(analyzer, lastControlId, candidateIds, {
+      signal: abort.signal,
+      onResult: (r) => {
+        currentResults.push({ ...r, difficultyCategory: getDifficultyCategory(r.difficulty, scoringModel) });
+      },
+      onProgress: (p) => {
+        lastProgress = p;
+        if (abort.signal.aborted) return;
+        currentResults.sort((a, b) => a.distance - b.distance);
+        setAnalyzedControls([...currentResults]);
+        setProgress(p.total > 0 ? Math.round((p.done / p.total) * 100) : 100);
+      },
+    }).then(({ aborted }) => {
+      if (abortRef.current !== abort) return; // superseded by a newer run
+      setIsLoading(false);
+      if (aborted) setStopped(lastProgress);
+    });
 
     return () => {
-      isCancelled = true;
+      abort.abort();
+      if (abortRef.current === abort) abortRef.current = null;
     };
-  }, [controls, nodes, edges, mapScale, lastControlId, excludeControlIds, scoringModel])
+  }, [analyzer, controls, lastControlId, excludeControlIds, scoringModel, runId])
 
+  /** Stop the running analysis, keeping the partial results. */
+  const stopAnalysis = () => abortRef.current?.abort();
+
+  // Esc stops a running analysis (ignored while typing in a form field)
+  useEffect(() => {
+    if (!isLoading) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key !== "Escape" || e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)) return;
+      abortRef.current?.abort();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isLoading]);
 
   const filteredControls = useMemo(() => {
     return analyzedControls.filter(control => {
@@ -199,12 +186,38 @@ export function NextControlsList({
       {isLoading && (
         <div className="px-4 mb-2">
           <div className="space-y-1">
-            <div className="text-xs text-muted-foreground flex justify-between">
-              <span>Finding routes...</span>
-              <span>{progress}%</span>
+            <div className="text-xs text-muted-foreground flex items-center gap-2">
+              <Loader2 className="h-3 w-3 animate-spin" />
+              <span className="flex-1">Analysing legs…</span>
+              <span className="font-mono tabular-nums">{progress}%</span>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-5 w-5"
+                onClick={stopAnalysis}
+                title="Stop the analysis (Esc). Results found so far are kept."
+              >
+                <Square className="h-3 w-3" />
+              </Button>
             </div>
             <Progress value={progress} className="h-1" />
           </div>
+        </div>
+      )}
+      {!isLoading && stopped && (
+        <div className="px-4 mb-2 text-xs text-muted-foreground flex items-center gap-2">
+          <span className="flex-1">
+            Stopped after {stopped.done} of {stopped.total} controls
+          </span>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-5 w-5"
+            onClick={() => setRunId((n) => n + 1)}
+            title="Restart the analysis"
+          >
+            <RotateCw className="h-3 w-3" />
+          </Button>
         </div>
       )}
 
@@ -261,7 +274,11 @@ export function NextControlsList({
       <div className="overflow-y-auto border-y border-border min-h-[100px] max-h-[300px]">
         {filteredControls.length === 0 ? (
           <div className="text-xs text-muted-foreground p-4 text-center">
-            {analyzedControls.length === 0 ? "No available controls" : "No controls match filters"}
+            {analyzedControls.length === 0
+              ? isLoading
+                ? "Analysing…"
+                : "No available controls"
+              : "No controls match filters"}
           </div>
         ) : (
           <table className="w-full text-xs">

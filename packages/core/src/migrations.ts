@@ -144,6 +144,10 @@ function migrateMapData(data: OldMapData): MapData {
   if ("extensions" in newMap) {
     delete (newMap as any).extensions;
   }
+  // "Show control points" is an app setting now (Settings → General), not stored per map
+  if ("showControlPoints" in newMap) {
+    delete (newMap as any).showControlPoints;
+  }
 
   return newMap;
 }

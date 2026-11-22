@@ -6,13 +6,17 @@
  */
 
 import type { Control } from "./models/control";
-import type { Edge, Node } from "./models/graph";
+import { edgeLengthOverride, type Edge, type Node } from "./models/graph";
 import type { Polygon } from "./models/polygon";
 import { findPolygonForPoint } from "./polygon-utils";
 import { getCoordinates, straightLineDistanceMeters } from "./utils/geometry";
 import type { PathResult } from "./route-search";
 
-/** Computes an edge's traversal distance in meters, applying ignoreLength/penalty rules. */
+/**
+ * Computes an edge's traversal distance in meters: the hand-set edge length
+ * when there is one, otherwise 0 for ignoreLength edges or the straight-line
+ * distance between the ends; then any penalty.
+ */
 export function calculateEdgeDistanceMeters(
   edge: Edge | undefined,
   fromNode: Node | Control | null,
@@ -26,8 +30,11 @@ export function calculateEdgeDistanceMeters(
 
   let distanceMeters = 0;
 
-  // ignoreLength edges have no geometric distance contribution (e.g., map-segment transitions/stairs handled elsewhere)
-  if (!edge?.ignoreLength) {
+  const override = edgeLengthOverride(edge);
+  if (override !== undefined) {
+    distanceMeters = override;
+  } else if (!edge?.ignoreLength) {
+    // ignoreLength edges have no geometric distance contribution (e.g., map-segment transitions/stairs handled elsewhere)
     distanceMeters = straightLineDistanceMeters(getCoordinates(fromNode), getCoordinates(toNode), mapScale);
   }
 

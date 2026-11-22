@@ -1,5 +1,5 @@
 
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer } from "@indoor-o-route-analysis/core";
 import type { EventData } from "@indoor-o-route-analysis/core";
 import type { Node } from "@indoor-o-route-analysis/core";
 import type { Edge } from "@indoor-o-route-analysis/core";
@@ -27,7 +27,6 @@ export async function* calculateEventTrafficGenerator(
   nodes: Node[],
   edges: Edge[],
   controls: Control[],
-  mapScale: number,
   targetCourseId: string | null = null,
 ): AsyncGenerator<{ progress: number; edgeTraffic: Map<string, EdgeTraffic>; nodeTraffic: Map<string, NodeTraffic> }> {
   // Initialize result maps
@@ -54,7 +53,9 @@ export async function* calculateEventTrafficGenerator(
   });
 
   // Setup analyzer
-  const analyzer = new RouteAnalyzer(controls, nodes, edges, mapScale);
+  // Same analyzer setup as every other view (floor polygons affect which
+  // alternative routes are found, so traffic must use them too)
+  const analyzer = createEventRouteAnalyzer(event, { courseId: targetCourseId });
 
   // Build edge lookup for efficient access
   const edgeLookup = new Map<string, Edge>();

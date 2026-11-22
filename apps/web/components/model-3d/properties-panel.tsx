@@ -11,12 +11,13 @@ import {
   DropdownMenuTrigger,
 } from "@indoor-o-route-analysis/ui";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@indoor-o-route-analysis/ui";
-import { Info, Maximize2, Download, Upload, Menu, CheckCircle, AlertTriangle, Target, Crosshair, Box } from "lucide-react";
-import { useAppData } from "@indoor-o-route-analysis/ui";
+import { Info, Maximize2, Download, Upload, Menu, CheckCircle, AlertTriangle, Target, Crosshair, Box, Trash2 } from "lucide-react";
+import { useAppData, confirmAction } from "@indoor-o-route-analysis/ui";
 import { ScrollArea } from "@indoor-o-route-analysis/ui";
 import Model3DInfoDialog from "./info-dialog";
 
 import type { Polygon } from "@indoor-o-route-analysis/core";
+import { updateRaceCourse } from "@indoor-o-route-analysis/core";
 
 export interface ModelMistake {
   id: string;
@@ -38,6 +39,7 @@ interface Model3DPropertiesPanelProps {
   onNavigate: (point: { x: number; y: number }) => void;
   show3D: boolean;
   onShow3DChange: (show: boolean) => void;
+
 }
 
 export default function Model3DPropertiesPanel({
@@ -54,7 +56,7 @@ export default function Model3DPropertiesPanel({
   show3D,
   onShow3DChange,
 }: Model3DPropertiesPanelProps) {
-  const { selectedEvent, updateEventData } = useAppData();
+  const { selectedEvent, updateEvent } = useAppData();
   const [polygonFloor, setPolygonFloor] = useState<number>(0);
   const importFileRef = useRef<HTMLInputElement>(null);
   const [polygonElevation, setPolygonElevation] = useState<number>(0);
@@ -89,14 +91,29 @@ export default function Model3DPropertiesPanel({
   const updatePolygons = (updater: (p: Polygon) => Polygon) => {
     if (!selectedEvent?.raceCourses?.[0]?.polygons) return;
 
-    const currentPolygons = selectedEvent.raceCourses[0].polygons;
-    const updatedPolygons = currentPolygons.map(updater);
-
-    const updatedRaceCourses = selectedEvent.raceCourses.map((rc, i) =>
-      i === 0 ? { ...rc, polygons: updatedPolygons } : rc,
+    updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => (rc.polygons ? { ...rc, polygons: rc.polygons.map(updater) } : rc)),
+      undefined,
+      { label: "Edit polygon" },
     );
+  };
 
-    updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+  /** Delete a floor (polygon) from the list, after confirming. Undoable. */
+  const handleDeletePolygon = async (p: Polygon) => {
+    if (!selectedEvent) return;
+    const ok = await confirmAction(`Delete floor ${p.level ?? 0}${p.elevation ? ` (${p.elevation} m)` : ""}? You can undo this with Ctrl/Cmd+Z.`, {
+      title: "Delete floor",
+      confirmLabel: "Delete",
+      destructive: true,
+    });
+    if (!ok) return;
+    await updateEvent(
+      selectedEvent.id,
+      (e) => updateRaceCourse(e, (rc) => ({ ...rc, polygons: (rc.polygons ?? []).filter((x) => x.id !== p.id) })),
+      undefined,
+      { label: "Delete floor" },
+    );
+    if (selectedPolygonId === p.id) onSelectPolygon(null);
   };
 
   const handlePolygonFloorChange = (value: number) => {
@@ -296,6 +313,7 @@ export default function Model3DPropertiesPanel({
                             variant="ghost"
                             size="icon"
                             className="h-5 w-5"
+                            title={`Go to floor ${p.level ?? 0}`}
                             onClick={(e) => {
                               e.stopPropagation();
                               const centroid = getCentroid(p.points);
@@ -305,6 +323,19 @@ export default function Model3DPropertiesPanel({
                           >
                             <Target className="h-3 w-3" />
                             <span className="sr-only">Navigate to</span>
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-5 w-5 hover:text-destructive"
+                            title={`Delete floor ${p.level ?? 0}`}
+                            aria-label={`Delete floor ${p.level ?? 0}`}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              void handleDeletePolygon(p);
+                            }}
+                          >
+                            <Trash2 className="h-3 w-3" />
                           </Button>
                         </td>
                       </tr>

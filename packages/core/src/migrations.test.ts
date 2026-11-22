@@ -195,3 +195,17 @@ describe("migrateEventData", () => {
     expect(twice).toEqual(once);
   });
 });
+
+describe("migrateEventData: deprecated map fields", () => {
+  it("drops showControlPoints (now an app setting) and keeps the rest of the map", () => {
+    const migrated = migrateEventData({
+      id: "e",
+      name: "n",
+      raceCourses: [{ maps: [{ id: "m", scale: 400, image: { url: "x.pdf" }, showControlPoints: true, layout: "pages" }] }],
+    });
+    const map = migrated.raceCourses?.[0].maps?.[0] as unknown as Record<string, unknown>;
+    expect("showControlPoints" in map).toBe(false);
+    expect(map.scale).toBe(400);
+    expect(map.layout).toBe("pages");
+  });
+});

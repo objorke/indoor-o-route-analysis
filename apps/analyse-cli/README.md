@@ -53,9 +53,9 @@ pnpm analyse event.xml analyze-all --format csv --scoring-model alpha@0.1
   `mentalSteps`, `planDepth`, `cognitiveEffortScore`, `humanOptimalGap` (route
   length vs. the true shortest route — a large gap flags a potential "bait"
   leg). `--algorithm human` only accepts control IDs for `--from`/`--to`
-  (unlike the default algorithm, which also accepts raw graph node IDs), and
-  can return "no route found" for very long-distance queries — the human
-  model is tuned for course-leg-scale distances, not arbitrary pathfinding.
+  (unlike the default algorithm, which also accepts raw graph node IDs). It
+  finds a route whenever one exists, including legs that need an unlabeled
+  one-way passage, which shows as `→` in the label sequence.
 - `analyze-course` — course totals (leg count, distance, max/average
   difficulty, target difficulty) plus per-leg detail (distance, difficulty,
   decision points, alternative edges, best route description).

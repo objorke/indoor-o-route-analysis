@@ -1,6 +1,6 @@
 
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
-import type { Edge, Node, Control, Polygon } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer } from "@indoor-o-route-analysis/core";
+import type { Edge, Node, Control, EventData } from "@indoor-o-route-analysis/core";
 
 export interface AnalysisResult {
   id: string; // unique id for key
@@ -28,8 +28,8 @@ export interface AnalysisParams {
     edges: Edge[];
     nodes: Node[];
     controls: Control[];
-    scale: number;
-    polygons: Polygon[];
+    /** Event the graph belongs to; analyzers for each variant are set up from it. */
+    event: EventData;
     modifyFrom: string;
     modifyTo: string;
     modifyStrategy: ModifyStrategy;
@@ -46,8 +46,7 @@ export async function runModifyGraphAnalysis(params: AnalysisParams) {
         edges,
         nodes,
         controls,
-        scale,
-        polygons,
+        event,
         modifyFrom,
         modifyTo,
         modifyStrategy,
@@ -129,7 +128,7 @@ export async function runModifyGraphAnalysis(params: AnalysisParams) {
             }
 
             // Create Analyzer
-            const analyzer = new RouteAnalyzer(controls, nodes, tempEdges, scale, undefined, polygons);
+            const analyzer = createEventRouteAnalyzer(event, { edges: tempEdges });
 
             // Run routing
             try {

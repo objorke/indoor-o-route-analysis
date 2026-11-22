@@ -13,15 +13,16 @@ import {
   Share2,
   Split,
   Waypoints,
+  Rat,
 } from "lucide-react";
 
-import { useAppData } from "@indoor-o-route-analysis/ui"
+import { useAppData, useEventRouteAnalyzer } from "@indoor-o-route-analysis/ui"
 import { Button } from "@indoor-o-route-analysis/ui";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@indoor-o-route-analysis/ui";
 import { PlaybackControls } from "@/components/shared/playback-controls";
 import { ScoringModelSelect } from "@/components/shared";
 import RouteAnalysisInfoDialog from "./info-dialog";
-import { RouteAnalyzer, type RouteInfo, getDifficultyCategory, getCourseDifficulty } from "@indoor-o-route-analysis/core";
+import { type RouteInfo, getDifficultyCategory, getCourseDifficulty, findTrapEasierRoute } from "@indoor-o-route-analysis/core";
 import { ScoringModelRegistry } from "@indoor-o-route-analysis/core";
 import { buildCourseReportHTML } from "./course-analysis-report";
 import { DifficultyTag } from "./difficulty-tag";
@@ -32,6 +33,7 @@ import AllCoursesAnalysisDialog from "./all-courses-analysis-dialog";
 import ShareLinkDialog from "./share-link-dialog";
 import { MapVisibilityToggle } from "@/components/map-visibility-toggle";
 import { analyzeCourseLegsGenerator, type Leg } from "@indoor-o-route-analysis/core";
+import { getRouteEnumerationAlgorithmInfo } from "@indoor-o-route-analysis/core";
 import { DIFFICULTY_CATEGORIES } from "@indoor-o-route-analysis/core";
 import { LegName } from "@/components/leg-name";
 import { getCourseControlLabels, getActualCourseControls } from "@indoor-o-route-analysis/core";
@@ -139,7 +141,9 @@ export default function RouteAnalysisPropertiesPanel({
   onAnalysisRoutesChange,
   loadedExampleFile,
 }: RouteAnalysisPropertiesPanelProps) {
-  const { selectedEvent, updateEventData, runningSpeed, routeAnalysisK } = useAppData();
+  const { selectedEvent, updateEventData, runningSpeed, routeAnalysisK, routeEnumerationAlgorithm } = useAppData();
+  // Metadata for the "Show all routes" algorithm picked in Settings → Analysis
+  const enumerationAlgorithmInfo = getRouteEnumerationAlgorithmInfo(routeEnumerationAlgorithm);
 
   // Use runningSpeed from context, default to 3 m/s (approx 5:33 min/km) if not set
   const speed = runningSpeed > 0 ? runningSpeed : 3;
@@ -182,18 +186,8 @@ export default function RouteAnalysisPropertiesPanel({
     return courses.find((c) => c.id === selectedCourseId);
   }, [courses, selectedCourseId]);
 
-  // Create RouteAnalyzer instance
-  const routeAnalyzer = useMemo(() => {
-    if (!selectedEvent) return null;
-    return new RouteAnalyzer(
-      selectedEvent.raceCourses?.[0]?.controls || [],
-      selectedEvent.raceCourses?.[0]?.vertices || [],
-      selectedEvent.raceCourses?.[0]?.edges || [],
-      mapScale,
-      currentScoringModel,
-      selectedEvent.raceCourses?.[0]?.polygons || [],
-    );
-  }, [selectedEvent, mapScale, currentScoringModel]);
+  // Create RouteAnalyzer instance (shared setup: floor polygons, map scale, scoring model)
+  const routeAnalyzer = useEventRouteAnalyzer(selectedEvent, { courseId: selectedCourseId, scoringModel: currentScoringModel });
 
   // State for async route analysis
   const [analysisState, setAnalysisState] = useState<{
@@ -221,7 +215,14 @@ export default function RouteAnalysisPropertiesPanel({
       setAnalysisState((prev) => ({ ...prev, isLoading: true, progress: 0, legs: [], routes: {} }));
 
       try {
-        const generator = analyzeCourseLegsGenerator(selectedCourse, selectedEvent, routeAnalyzer, findAllRoutes, routeAnalysisK);
+        const generator = analyzeCourseLegsGenerator(
+          selectedCourse,
+          selectedEvent,
+          routeAnalyzer,
+          findAllRoutes,
+          routeAnalysisK,
+          routeEnumerationAlgorithm,
+        );
 
         for await (const update of generator) {
           if (isCancelled) break;
@@ -246,7 +247,15 @@ export default function RouteAnalysisPropertiesPanel({
     return () => {
       isCancelled = true;
     };
-  }, [selectedCourse, selectedEvent, routeAnalyzer, findAllRoutes, routeAnalysisK, onAnalysisRoutesChange]);
+  }, [
+    selectedCourse,
+    selectedEvent,
+    routeAnalyzer,
+    findAllRoutes,
+    routeAnalysisK,
+    routeEnumerationAlgorithm,
+    onAnalysisRoutesChange,
+  ]);
 
   const legs = analysisState.legs;
 
@@ -463,7 +472,7 @@ export default function RouteAnalysisPropertiesPanel({
           size="icon"
           className="h-7 w-7"
           onClick={() => onFindAllRoutesChange(!findAllRoutes)}
-          title="Show all routes (including minor variations)"
+          title={`Show all routes (including minor variations) — algorithm: ${enumerationAlgorithmInfo.label}. Change it in Settings → Analysis.`}
         >
           <Tractor className="h-4 w-4" />
         </Button>
@@ -650,7 +659,7 @@ export default function RouteAnalysisPropertiesPanel({
           }}
           disabled={courses.length === 0}
         >
-          <SelectTrigger className="w-full border-none rounded-none focus:ring-0 focus:ring-offset-0 h-10 px-3">
+          <SelectTrigger className="w-full border-none rounded-none focus:ring-0 focus:ring-offset-0 h-10 px-3" aria-label="Course">
             <SelectValue placeholder="Select a course to analyze" />
           </SelectTrigger>
           <SelectContent>
@@ -672,7 +681,10 @@ export default function RouteAnalysisPropertiesPanel({
           <div className="px-3 pb-2 pt-1">
             <div className="mt-1 text-xs">
               <div className="flex justify-between items-center mb-1">
-                <span className="text-muted-foreground">Analyzing (k={routeAnalysisK}{findAllRoutes ? ", all routes" : ""})...</span>
+                <span className="text-muted-foreground">
+                  Analyzing (k={routeAnalysisK}
+                  {findAllRoutes ? `, all routes: ${enumerationAlgorithmInfo.label}` : ""})...
+                </span>
                 <span className="font-mono">{analysisState.progress}%</span>
               </div>
               <div className="h-1 w-full bg-secondary rounded-full overflow-hidden">
@@ -719,6 +731,8 @@ export default function RouteAnalysisPropertiesPanel({
                   easiestRoute &&
                   leg.difficulty !== undefined &&
                   Math.round(easiestRoute.difficulty) < Math.round(leg.difficulty);
+                // Trap: the shortest route is harder than a longer one
+                const trapRoute = findTrapEasierRoute(leg.difficulty, routes);
 
                 return (
                   <div key={leg.id}>
@@ -736,6 +750,14 @@ export default function RouteAnalysisPropertiesPanel({
                           {isHighestDifficulty && (
                             <span className="text-yellow-500" title="Svåraste sträckan">
                               ⭐
+                            </span>
+                          )}
+                          {trapRoute && (
+                            <span
+                              className="text-amber-400"
+                              title={`Trap: the easiest route (${trapRoute.distance.toFixed(0)} m, D${Math.round(trapRoute.difficulty!)}) may be chosen, although a more difficult route that is shorter (${leg.shortestDistance.toFixed(0)} m, D${Math.round(leg.difficulty)}) exists`}
+                            >
+                              <Rat className="h-3.5 w-3.5" />
                             </span>
                           )}
                         </span>
@@ -1195,7 +1217,6 @@ export default function RouteAnalysisPropertiesPanel({
             courses={courses}
             selectedCourseId={selectedCourseId}
             event={selectedEvent}
-            mapScale={mapScale}
             scoringModel={currentScoringModel}
             runningSpeed={speed}
           />
@@ -1203,7 +1224,6 @@ export default function RouteAnalysisPropertiesPanel({
             isOpen={showBatchAnalysis}
             onClose={() => setShowBatchAnalysis(false)}
             event={selectedEvent}
-            mapScale={mapScale}
             initialScoringModelId={currentScoringModel.getFullId()}
             runningSpeed={speed}
           />

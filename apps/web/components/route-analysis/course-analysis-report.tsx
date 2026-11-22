@@ -1,7 +1,7 @@
 "use client"
 
 import React, { useMemo } from "react";
-import { getDifficultyCategory, getCourseAverageDifficulty } from "@indoor-o-route-analysis/core";
+import { getDifficultyCategory, getCourseAverageDifficulty, getEventScoringModel } from "@indoor-o-route-analysis/core";
 import type { ScoringModel } from "@indoor-o-route-analysis/core";
 import { DifficultyTag } from "./difficulty-tag";
 import type { Course, EventData } from "@indoor-o-route-analysis/core";
@@ -407,7 +407,7 @@ export function buildCourseReportHTML(
 // Optional React component to render the report inside the app (not used by export)
 export default function CourseAnalysisReport({ event, course, legs, getAlternativeRoutes: _getAlternativeRoutes }: CourseAnalysisReportProps) {
   const overallCourseDifficulty = legs.reduce((max, l) => Math.max(max, l.difficulty), 0);
-  const _overallCat = getDifficultyCategory(overallCourseDifficulty); // Uses default model for React component
+  const scoringModel = getEventScoringModel(event);
 
   const courseTotalDistance = useMemo(() => legs.reduce((sum, leg) => sum + leg.shortestDistance, 0), [legs]);
   const mostDifficultLegIdx = useMemo(
@@ -429,7 +429,7 @@ export default function CourseAnalysisReport({ event, course, legs, getAlternati
           <strong>Length:</strong> {courseTotalDistance.toFixed(0)} m
         </div>
         <div>
-          <strong>Difficulty:</strong> <DifficultyTag difficulty={overallCourseDifficulty} className="ml-2" size="sm" />
+          <strong>Difficulty:</strong> <DifficultyTag difficulty={overallCourseDifficulty} className="ml-2" size="sm" scoringModel={scoringModel} />
         </div>
         <div>
           <strong>Most Difficult Leg:</strong> {mostDifficultLeg}

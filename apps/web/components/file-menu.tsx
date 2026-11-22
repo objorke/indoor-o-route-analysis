@@ -1,24 +1,36 @@
 "use client"
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { Menu, Plus, FolderOpen, Save, X as XIcon, FileUp, FileDown, Settings, Trash2, ChevronRight, ChevronDown, Info } from "lucide-react";
+import { Menu, Plus, FolderOpen, Save, X as XIcon, FileUp, FileDown, Settings, Trash2, ChevronRight, ChevronDown, Info, Undo2, Redo2 } from "lucide-react";
 import { Button } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { getMapFile, getEventPdfData } from "@indoor-o-route-analysis/core";
-import { arrayBufferToBase64 } from "@indoor-o-route-analysis/core";
+import { getMapFile, getEventPdfData } from "@indoor-o-route-analysis/core/storage";
+import { arrayBufferToBase64, mergeRaceCourse } from "@indoor-o-route-analysis/core";
 import { ConfirmDialog } from "@indoor-o-route-analysis/ui";
 import SettingsDialog from "@/components/settings-dialog";
 import type { EventData, RaceCourseData } from "@indoor-o-route-analysis/core";
-import { parseEventFromIOFXML, exportEventToIOFXML } from "@indoor-o-route-analysis/core";
+import { parseEventFromIOFXML, exportEventToIOFXML, assertValidEventStructure } from "@indoor-o-route-analysis/core";
 import { serializeEventToJSON } from "@indoor-o-route-analysis/core";
 import { processImportedJSON } from "@indoor-o-route-analysis/core";
 import { openJsonFilePicker, saveJsonToFile } from "@/lib/file-picker";
 import { NO, SE, FI, DK, GB, US, FR, CH, IT, ES, CZ } from 'country-flag-icons/react/3x2';
+import { notify, useSettings } from "@indoor-o-route-analysis/ui";
+import {
+  fetchExampleIndex,
+  repositoryLabel,
+  resolveLoadExampleParam,
+  exampleFilename,
+  type ExampleIndexEntry,
+} from "@indoor-o-route-analysis/core";
 
 type FileMenuProps = {
   onNavigate?: (screen: string) => void;
   activeScreen?: string;
+  /** Called after an example event was loaded from `url` (used for share links). */
+  onExampleLoaded?: (eventId: string, url: string) => void;
 };
+
+type ExampleRepository = { indexUrl: string; label: string; entries: ExampleIndexEntry[]; error?: string };
 
 // country-flag-icons Props type collapses className/title under React 19 types
 const flagProps = (className: string, title: string) =>
@@ -46,7 +58,6 @@ function CountryFlag({ country }: { country?: string }) {
   }
 }
 
-// processImportedJSON is imported from @/lib/io/process-import
 
 /**
  * Build a serialized JSON string for the event, embedding PDF data if needed.
@@ -86,11 +97,17 @@ async function buildEventJSON(
   return serializeEventToJSON(eventData);
 }
 
-export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: FileMenuProps) {
+export default function FileMenu({ onNavigate, activeScreen: _activeScreen, onExampleLoaded }: FileMenuProps) {
   const {
     selectedEvent,
     setSelectedEventId,
-    updateEventData,
+    updateEvent,
+    undo,
+    redo,
+    canUndo,
+    canRedo,
+    undoLabel,
+    redoLabel,
     addEvent,
     unsavedChanges,
     saveCurrentEvent,
@@ -104,12 +121,15 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
     setRunningSpeed,
     routeAnalysisK,
     setRouteAnalysisK,
+    routeEnumerationAlgorithm,
+    setRouteEnumerationAlgorithm,
     markAsSaved,
     currentPdfData,
     clearRecentFilesList,
     addRecentFileHandle,
     eventFilenames,
     setEventFilename,
+    setSelectedCourseId,
   } = useAppData();
 
   const [showMenu, setShowMenu] = useState(false);
@@ -118,23 +138,30 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
   const [pendingAction, setPendingAction] = useState<(() => void) | null>(null);
   const [autoSaveEnabled, setAutoSaveEnabled] = useState(false);
   const importIOFInputRef = useRef<HTMLInputElement>(null);
-  const [exampleEvents, setExampleEvents] = useState<{ url: string; date: string; title?: string; country?: string }[]>([]);
+  const { exampleRepositories } = useSettings();
+  const [exampleRepos, setExampleRepos] = useState<ExampleRepository[]>([]);
   const [openSubmenu, setOpenSubmenu] = useState<'examples' | 'recent' | null>(null);
 
-  // Load examples index — fetch works in both web and Electron (custom app:// protocol)
+  // Load the index.json of every configured example repository (Settings → Examples)
   useEffect(() => {
-    fetch("/examples/index.json")
-      .then((res) => {
-        if (res.ok) return res.json();
-        return [];
-      })
-      .then((data) => {
-        if (Array.isArray(data)) {
-          setExampleEvents(data);
+    let cancelled = false;
+    Promise.all(
+      exampleRepositories.map(async (indexUrl): Promise<ExampleRepository> => {
+        const label = repositoryLabel(indexUrl);
+        try {
+          return { indexUrl, label, entries: await fetchExampleIndex(indexUrl) };
+        } catch (err) {
+          console.error(`Failed to load example index ${indexUrl}`, err);
+          return { indexUrl, label, entries: [], error: (err as Error).message || "Failed to load" };
         }
-      })
-      .catch((err) => console.error("Failed to load examples index", err));
-  }, []);
+      }),
+    ).then((repos) => {
+      if (!cancelled) setExampleRepos(repos);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [exampleRepositories]);
 
   const selectedEventRef = useRef(selectedEvent);
   const fileHandleRef = useRef(fileHandle);
@@ -172,11 +199,11 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
         try {
           importedData = JSON.parse(text);
         } catch {
-          alert("Failed to parse JSON file.");
+          notify("Failed to parse JSON file.", { kind: "error" });
           return;
         }
 
-        const { event: newEvent, pdfData } = await processImportedJSON(importedData);
+        const { event: newEvent, pdfData } = await processImportedJSON(importedData, getMapFile);
 
         await addEvent(newEvent, pdfData, true);
         if (handle.name) {
@@ -190,7 +217,7 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
       const err = e as Error;
       if (err.name !== "AbortError") {
         console.error(err);
-        alert("Error opening file: " + err.message);
+        notify("Error opening file: " + err.message, { kind: "error" });
       }
     }
   }, [addEvent, setFileHandle, onNavigate, setEventFilename]);
@@ -226,11 +253,11 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
         try {
           importedData = JSON.parse(text);
         } catch {
-          alert("Failed to parse JSON file.");
+          notify("Failed to parse JSON file.", { kind: "error" });
           return;
         }
 
-        const { event: newEvent, pdfData } = await processImportedJSON(importedData);
+        const { event: newEvent, pdfData } = await processImportedJSON(importedData, getMapFile);
         newEvent.id = crypto.randomUUID();
 
         await addEvent(newEvent, pdfData, true);
@@ -242,7 +269,7 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
         if (onNavigate) onNavigate("event-manager");
       } catch (err) {
         console.error("Error opening recent file", err);
-        alert("Failed to open file: " + (err as Error).message);
+        notify("Failed to open file: " + (err as Error).message, { kind: "error" });
       }
     },
     [addEvent, setFileHandle, onNavigate, openLocalFile, setEventFilename],
@@ -357,11 +384,13 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
     }
   }, [addEvent, setFileHandle, onNavigate]);
 
-  // --- Open Example --- fetch works in both web and Electron (custom app:// protocol)
+  // --- Open Example --- `url` is an absolute URL from a repository index; recent-file
+  // entries from older versions may hold a bare filename (resolved against the default repository).
   const openExample = useCallback(
     async (url: string) => {
       try {
-        const fullUrl = url.startsWith("./") ? "/examples/" + url.substring(2) : "/examples/" + url;
+        const fullUrl = resolveLoadExampleParam(url);
+        if (!fullUrl) throw new Error(`Invalid example URL: ${url}`);
         const response = await fetch(fullUrl);
         if (!response.ok) {
           throw new Error("Failed to fetch example event");
@@ -369,27 +398,29 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const importedData: any = await response.json();
 
-        const { event: newEvent, pdfData } = await processImportedJSON(importedData);
+        const { event: newEvent, pdfData } = await processImportedJSON(importedData, getMapFile);
 
         // Ensure ID is new
         newEvent.id = crypto.randomUUID();
         newEvent.startTime.date = newEvent.startTime.date || new Date().toISOString().split("T")[0];
 
         await addEvent(newEvent, pdfData, true);
-        const normalizedUrl = url.trim().replace(/^\.\//, "").replace(/^\/+/, "").replace(/^examples\//, "");
-        const normalizedFilename = (normalizedUrl.split("?")[0]?.split("#")[0] ?? "").split("/").pop() ?? "";
-        if (normalizedFilename) {
-          await setEventFilename(newEvent.id, normalizedFilename);
+        const filename = exampleFilename(fullUrl);
+        if (filename) {
+          await setEventFilename(newEvent.id, filename);
         }
         setFileHandle(null);
-        await addRecentFileHandle({ name: newEvent.name || url, url: url });
-        if (onNavigate) onNavigate("event-manager");
+        await addRecentFileHandle({ name: newEvent.name || filename, url: fullUrl });
+        onExampleLoaded?.(newEvent.id, fullUrl);
+        // Examples open straight in Route Analysis with the first course (and, via app-shell, its first leg and route) selected
+        setSelectedCourseId(newEvent.raceCourses?.[0]?.courses?.[0]?.id ?? null);
+        if (onNavigate) onNavigate("route-analysis");
       } catch (error) {
         console.error("Error importing example event:", error);
-        alert("Failed to import example event. Please check that the file exists.");
+        notify("Failed to import example event. Please check the repository and your network connection.", { kind: "error" });
       }
     },
-    [addEvent, setEventFilename, setFileHandle, onNavigate, addRecentFileHandle],
+    [addEvent, setEventFilename, setFileHandle, onNavigate, addRecentFileHandle, setSelectedCourseId, onExampleLoaded],
   );
 
   // --- Save ---
@@ -417,7 +448,7 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
       const err = e as Error;
       if (err.name !== "AbortError") {
         console.error(err);
-        alert("Error saving file: " + err.message);
+        notify("Error saving file: " + err.message, { kind: "error" });
       }
     }
   }, [selectedEvent, fileHandle, setFileHandle, saveCurrentEvent, markAsSaved, currentPdfData, eventFilenames, setEventFilename, getSuggestedFilename]);
@@ -447,7 +478,7 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
       const err = e as Error;
       if (err.name !== "AbortError") {
         console.error(err);
-        alert("Error saving file: " + err.message);
+        notify("Error saving file: " + err.message, { kind: "error" });
       }
     }
   }, [selectedEvent, setFileHandle, saveCurrentEvent, markAsSaved, currentPdfData, eventFilenames, setEventFilename, getSuggestedFilename]);
@@ -499,6 +530,8 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
       try {
         const text = await file.text();
         const parsed = parseEventFromIOFXML(text);
+        // Same structural check as JSON files: reject malformed data before merging it into the event
+        assertValidEventStructure({ id: selectedEvent.id, name: parsed.name ?? "", raceCourses: parsed.raceCourses });
 
         const currentRaceCourse = selectedEvent.raceCourses?.[0] || { controls: [], courses: [] };
 
@@ -554,36 +587,26 @@ export default function FileMenu({ onNavigate, activeScreen: _activeScreen }: Fi
         }
         raceCourseUpdate.classAssignments = parsedClassAssignments;
 
-        const currentCourses = selectedEvent.raceCourses || [];
-        const newRaceCourses = [...currentCourses];
-        if (newRaceCourses.length === 0) {
-          newRaceCourses.push({ ...raceCourseUpdate } as RaceCourseData);
-        } else {
-          newRaceCourses[0] = { ...newRaceCourses[0], ...raceCourseUpdate };
-        }
+        // Merge into the latest event (the file read and parse are async)
+        await updateEvent(selectedEvent.id, (e) => ({
+          ...mergeRaceCourse(e, raceCourseUpdate),
+          country: parsed.country || e.country || "",
+          eventUrl: parsed.eventUrl || e.eventUrl,
+          eventImageUrl: parsed.eventImageUrl || e.eventImageUrl,
+        }), undefined, { label: "Import IOF XML" });
 
-        const updates: Partial<EventData> = {
-          raceCourses: newRaceCourses,
-          country: parsed.country || selectedEvent.country || "",
-          difficultyScoringModel: selectedEvent.difficultyScoringModel,
-          eventUrl: parsed.eventUrl || selectedEvent.eventUrl,
-          eventImageUrl: parsed.eventImageUrl || selectedEvent.eventImageUrl,
-        };
-
-        await updateEventData(selectedEvent.id, updates);
-
-        alert(`Import Successful!
+        notify(`Import successful!
 Courses imported: ${parsedCourses.length}
 Controls imported: ${parsedControls.length}
 Controls changed: ${changedControlsCount}
-Class assignments: ${parsedClassAssignments.length}`);
+Class assignments: ${parsedClassAssignments.length}`, { kind: "success" });
 
       } catch (e) {
         console.error("Failed to import IOF XML:", e);
-        alert("Failed to import IOF XML: " + (e instanceof Error ? e.message : String(e)));
+        notify("Failed to import IOF XML: " + (e instanceof Error ? e.message : String(e)), { kind: "error" });
       }
     },
-    [selectedEvent, updateEventData],
+    [selectedEvent, updateEvent],
   );
 
   const onNewEvent = () => executeAction(createNewEvent);
@@ -638,7 +661,7 @@ Class assignments: ${parsedClassAssignments.length}`);
                 <FolderOpen className="h-4 w-4" /> Open...
               </button>
 
-              {exampleEvents.length > 0 && (
+              {exampleRepos.length > 0 && (
                 <div className="relative">
                   <button
                     className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
@@ -658,20 +681,37 @@ Class assignments: ${parsedClassAssignments.length}`);
                     </span>
                   </button>
                   {openSubmenu === "examples" && (
-                    <div className="w-full bg-accent/5 sm:absolute sm:left-full sm:top-0 sm:w-80 sm:bg-popover sm:border sm:border-border sm:shadow-lg sm:py-1 sm:-ml-1">
-                      {exampleEvents.map((item, i) => (
-                        <button
-                          key={i}
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2 pl-8 sm:pl-4"
-                          onClick={() => {
-                            closeMenu();
-                            executeAction(() => openExample(item.url));
-                          }}
-                          title={item.title || item.url.split("/").pop() || item.url}
-                        >
-                          <CountryFlag country={item.country} />
-                          <span className="truncate">{item.title || item.url.split("/").pop()?.replace(".json", "") || item.url}</span>
-                        </button>
+                    <div className="w-full bg-accent/5 sm:absolute sm:left-full sm:top-0 sm:w-80 sm:max-h-[70vh] sm:overflow-y-auto sm:bg-popover sm:border sm:border-border sm:shadow-lg sm:py-1 sm:-ml-1">
+                      {exampleRepos.map((repo) => (
+                        <div key={repo.indexUrl}>
+                          {exampleRepos.length > 1 && (
+                            <div
+                              className="px-4 pt-2 pb-1 text-[10px] uppercase tracking-wide text-muted-foreground truncate pl-8 sm:pl-4"
+                              title={repo.indexUrl}
+                            >
+                              {repo.label}
+                            </div>
+                          )}
+                          {repo.error && (
+                            <div className="px-4 py-1 text-xs text-destructive pl-8 sm:pl-4" title={repo.indexUrl}>
+                              Could not load: {repo.error}
+                            </div>
+                          )}
+                          {repo.entries.map((item) => (
+                            <button
+                              key={item.url}
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2 pl-8 sm:pl-4"
+                              onClick={() => {
+                                closeMenu();
+                                executeAction(() => openExample(item.url));
+                              }}
+                              title={item.title || exampleFilename(item.url)}
+                            >
+                              <CountryFlag country={item.country} />
+                              <span className="truncate">{item.title || exampleFilename(item.url).replace(/\.json$/, "")}</span>
+                            </button>
+                          ))}
+                        </div>
                       ))}
                     </div>
                   )}
@@ -776,6 +816,30 @@ Class assignments: ${parsedClassAssignments.length}`);
 
               <div className="my-1 border-t border-border" />
               <button
+                className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2 disabled:opacity-50 disabled:pointer-events-none"
+                onClick={() => {
+                  closeMenu();
+                  undo();
+                }}
+                disabled={!canUndo}
+              >
+                <Undo2 className="h-4 w-4" /> Undo{undoLabel ? ` ${undoLabel}` : ""}
+                <span className="ml-auto text-xs text-muted-foreground">Ctrl+Z</span>
+              </button>
+              <button
+                className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2 disabled:opacity-50 disabled:pointer-events-none"
+                onClick={() => {
+                  closeMenu();
+                  redo();
+                }}
+                disabled={!canRedo}
+              >
+                <Redo2 className="h-4 w-4" /> Redo{redoLabel ? ` ${redoLabel}` : ""}
+                <span className="ml-auto text-xs text-muted-foreground">Ctrl+Shift+Z</span>
+              </button>
+
+              <div className="my-1 border-t border-border" />
+              <button
                 className="w-full text-left px-4 py-2 text-sm hover:bg-accent hover:text-accent-foreground flex items-center gap-2"
                 onClick={() => {
                   closeMenu();
@@ -832,6 +896,8 @@ Class assignments: ${parsedClassAssignments.length}`);
         onRunningSpeedChange={setRunningSpeed}
         routeAnalysisK={routeAnalysisK}
         onRouteAnalysisKChange={setRouteAnalysisK}
+        routeEnumerationAlgorithm={routeEnumerationAlgorithm}
+        onRouteEnumerationAlgorithmChange={setRouteEnumerationAlgorithm}
       />
 
       <ConfirmDialog

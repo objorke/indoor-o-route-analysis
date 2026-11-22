@@ -2,9 +2,8 @@
 
 import { useCallback, useEffect, useState, useRef } from "react";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { RouteAnalyzer, getDifficultyCategory } from "@indoor-o-route-analysis/core";
-import { ScoringModelRegistry } from "@indoor-o-route-analysis/core";
-import { getActiveMap } from "@indoor-o-route-analysis/core";
+import { getDifficultyCategory, analyzeNextLegs, createEventRouteAnalyzer, getEventScoringModel } from "@indoor-o-route-analysis/core";
+import { getActiveMap, mergeRaceCourse, removeControl, updateRaceCourse as updateRaceCourseOf, type RaceCourseData } from "@indoor-o-route-analysis/core";
 import CourseSettingMapViewer, { type CourseSettingMapViewerHandle } from "./map-viewer";
 import CourseSettingPropertiesPanel from "./properties-panel";
 
@@ -15,7 +14,7 @@ export default function CourseSetting() {
     setSelectedCourseId,
     selectedControlId,
     setSelectedControlId,
-    updateEventData,
+    updateEvent,
   } = useAppData();
 
   const mapViewerRef = useRef<CourseSettingMapViewerHandle>(null);
@@ -34,81 +33,58 @@ export default function CourseSetting() {
   const raceCourse = selectedEvent?.raceCourses?.[0];
   const activeMap = getActiveMap(selectedEvent ?? undefined, selectedCourseId ?? undefined);
 
-  // Calculate difficulty colors for available controls
+  // Calculate difficulty colors for available controls.
+  // Progress is shown in the properties panel; turning the toggle off (or any
+  // input change) aborts the running calculation via the effect cleanup.
+  const [difficultyProgress, setDifficultyProgress] = useState<{ done: number; total: number } | null>(null);
   useEffect(() => {
+    const reset = () => {
+      setControlColors(new Map());
+      setDifficultyProgress(null);
+    };
     if (!showDifficultyColors || !selectedEvent || !selectedCourseId || !raceCourse) {
-      setTimeout(() => setControlColors(new Map()), 0);
+      setTimeout(reset, 0);
       return;
     }
 
     const course = raceCourse.courses?.find((c) => c.id === selectedCourseId);
-    if (!course?.controls || course.controls.length === 0) {
-      setTimeout(() => setControlColors(new Map()), 0);
-      return;
-    }
-
-    const lastControlEntry = course.controls[course.controls.length - 1];
-    if (!lastControlEntry.controlId) {
-      setTimeout(() => setControlColors(new Map()), 0);
-      return;
-    }
-    const lastControlId = lastControlEntry.controlId;
-
-    // Identify controls already in course to exclude them
-    const courseControlIds = new Set(course.controls.map((c) => c.controlId).filter((id): id is string => !!id));
-
-    const scoringModelId = selectedEvent.difficultyScoringModel;
-    const scoringModel = scoringModelId ? ScoringModelRegistry.getModel(scoringModelId) : undefined;
-
-    let isCancelled = false;
-
+    const lastControlId = course?.controls?.[course.controls.length - 1]?.controlId;
     const eventControls = raceCourse.controls ?? [];
-    const eventNodes = raceCourse.vertices ?? [];
-    const eventEdges = raceCourse.edges ?? [];
-    const mapScale = activeMap?.scale ?? 1000;
+    if (!course || !lastControlId || !eventControls.some((c) => c.id === lastControlId)) {
+      setTimeout(reset, 0);
+      return;
+    }
 
-    const calculateColors = async () => {
-      // Yield to allow UI update
-      await new Promise((resolve) => setTimeout(resolve, 0));
+    // Exclude controls already in the course
+    const courseControlIds = new Set(course.controls.map((c) => c.controlId).filter((id): id is string => !!id));
+    const candidateIds = eventControls
+      .filter((c) => !courseControlIds.has(c.id) && c.id !== lastControlId)
+      .map((c) => c.id);
 
-      const eventPolygons = raceCourse.polygons ?? [];
-      const analyzer = new RouteAnalyzer(eventControls, eventNodes, eventEdges, mapScale, scoringModel, eventPolygons);
+    const scoringModel = getEventScoringModel(selectedEvent);
+    const analyzer = createEventRouteAnalyzer(selectedEvent, { courseId: selectedCourseId });
 
-      const lastControl = eventControls.find((c) => c.id === lastControlId);
-      if (!lastControl) return;
+    const abort = new AbortController();
+    setTimeout(() => {
+      if (!abort.signal.aborted) setDifficultyProgress({ done: 0, total: candidateIds.length });
+    }, 0);
 
+    analyzeNextLegs(analyzer, lastControlId, candidateIds, {
+      signal: abort.signal,
+      onProgress: (p) => {
+        if (!abort.signal.aborted) setDifficultyProgress(p);
+      },
+    }).then(({ results, aborted }) => {
+      if (aborted) return;
       const colors = new Map<string, string>();
-      const potentialControls = eventControls.filter((c) => !courseControlIds.has(c.id) && c.id !== lastControlId);
-
-      // Process in batches
-      const BATCH_SIZE = 10;
-      for (let i = 0; i < potentialControls.length; i += BATCH_SIZE) {
-        if (isCancelled) return;
-        const batch = potentialControls.slice(i, i + BATCH_SIZE);
-
-        for (const targetControl of batch) {
-          try {
-            // Quickest route search
-            const routes = analyzer.findAlternativePathsBetweenControls(lastControl.id, targetControl.id, 1);
-            if (routes.length > 0) {
-              const cat = getDifficultyCategory(routes[0].difficulty, scoringModel);
-              colors.set(targetControl.id, cat.color);
-            }
-          } catch (e) {
-            console.warn(`Failed to calc route to ${targetControl.id}`, e);
-          }
-        }
-        await new Promise((resolve) => setTimeout(resolve, 0));
-      }
-
-      if (!isCancelled) {
-        setControlColors(colors);
-      }
-    };;
-    calculateColors();
+      for (const r of results) colors.set(r.controlId, getDifficultyCategory(r.difficulty, scoringModel).color);
+      setControlColors(colors);
+      setDifficultyProgress(null);
+    });
 
     return () => {
-      isCancelled = true;
+      abort.abort();
+      setTimeout(() => setDifficultyProgress(null), 0);
     };
   }, [
     showDifficultyColors,
@@ -118,17 +94,21 @@ export default function CourseSetting() {
     activeMap?.scale,
   ]);
 
+  /**
+   * Update the first race course of the latest event: either merge fields, or
+   * apply a function to it. `label` names the undo step.
+   */
   const updateRaceCourse = useCallback(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    async (updates: any) => {
+    async (updates: Partial<RaceCourseData> | ((rc: RaceCourseData) => RaceCourseData), label?: string) => {
       if (!selectedEvent) return;
-      const raceCourses = selectedEvent.raceCourses ?? [];
-      const updatedRaceCourses = [...raceCourses];
-      // In this simplified model we always edit index 0
-      updatedRaceCourses[0] = { ...updatedRaceCourses[0], ...updates };
-      await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+      await updateEvent(
+        selectedEvent.id,
+        (e) => (typeof updates === "function" ? updateRaceCourseOf(e, updates) : mergeRaceCourse(e, updates)),
+        undefined,
+        { label },
+      );
     },
-    [selectedEvent, updateEventData],
+    [selectedEvent, updateEvent],
   );
 
   const handleAddControlToCourse = useCallback(
@@ -140,18 +120,16 @@ export default function CourseSetting() {
       if (!control) return;
 
       // Append control ID to the current course
-      const updatedCourses = (raceCourse.courses ?? []).map((c) => {
-        if (c.id === selectedCourseId) {
-          const courseControls = c.controls ?? [];
-          return {
-            ...c,
-            controls: [...courseControls, { controlId: control.id }],
-          };
-        }
-        return c;
-      });
-
-      await updateRaceCourse({ courses: updatedCourses });
+      const courseId = selectedCourseId;
+      await updateRaceCourse(
+        (rc) => ({
+          ...rc,
+          courses: (rc.courses ?? []).map((c) =>
+            c.id === courseId ? { ...c, controls: [...(c.controls ?? []), { controlId: control.id }] } : c,
+          ),
+        }),
+        "Add control to course",
+      );
     },
     [selectedCourseId, raceCourse, updateRaceCourse],
   );
@@ -163,45 +141,28 @@ export default function CourseSetting() {
       const control = raceCourse.controls?.find((c) => c.id === selectedControlId);
       if (!control) return;
 
-      const updatedControls = (raceCourse.controls ?? []).map((c) =>
-        c.id === selectedControlId
-          ? {
-              ...c,
-              mapPosition: {
-                ...c.mapPosition,
-                x: c.mapPosition.x + delta.x,
-                y: c.mapPosition.y + delta.y,
-              },
-            }
-          : c,
+      const id = selectedControlId;
+      // Arrow-key nudges within the coalescing window merge into one undo step
+      await updateRaceCourse(
+        (rc) => ({
+          ...rc,
+          controls: (rc.controls ?? []).map((c) =>
+            c.id === id
+              ? { ...c, mapPosition: { ...c.mapPosition, x: c.mapPosition.x + delta.x, y: c.mapPosition.y + delta.y } }
+              : c,
+          ),
+        }),
+        "Move control",
       );
-
-      await updateRaceCourse({ controls: updatedControls });
     },
     [selectedControlId, raceCourse, updateRaceCourse],
   );
 
   const handleDeleteSelectedControl = useCallback(async () => {
     if (!raceCourse || !selectedControlId) return;
-
-    const controls = raceCourse.controls ?? [];
-    const controlToDelete = controls.find((c) => c.id === selectedControlId);
-    const updatedControls = controls.filter((c) => c.id !== selectedControlId);
-
-    const updatedCourses = (raceCourse.courses ?? []).map((course) => {
-      const courseControls = course.controls ?? [];
-      return {
-        ...course,
-        controls: controlToDelete
-          ? courseControls.filter((ctrl) => ctrl.controlId !== controlToDelete.id)
-          : courseControls,
-      };
-    });
-
-    await updateRaceCourse({
-      controls: updatedControls,
-      courses: updatedCourses,
-    });
+    // Shared helper: removes the control, its course entries and its graph edges
+    const id = selectedControlId;
+    await updateRaceCourse((rc) => removeControl(rc, id), "Delete control");
     setSelectedControlId(null);
   }, [selectedControlId, raceCourse, setSelectedControlId, updateRaceCourse]);
 
@@ -233,24 +194,22 @@ export default function CourseSetting() {
         // Ctrl/Cmd+S: Set control type to Start
         if (event.key.toLowerCase() === "s" && selectedControlId) {
           event.preventDefault();
-          const controls = raceCourse?.controls ?? [];
-          const updatedControls = controls.map((c) =>
-            c.id === selectedControlId ? { ...c, type: "start" as const } : c,
+          const id = selectedControlId;
+          updateRaceCourse(
+            (rc) => ({ ...rc, controls: (rc.controls ?? []).map((c) => (c.id === id ? { ...c, type: "start" as const } : c)) }),
+            "Set control type",
           );
-
-          updateRaceCourse({ controls: updatedControls });
           return;
         }
 
         // Ctrl/Cmd+F: Set control type to Finish
         if (event.key.toLowerCase() === "f" && selectedControlId) {
           event.preventDefault();
-          const controls = raceCourse?.controls ?? [];
-          const updatedControls = controls.map((c) =>
-            c.id === selectedControlId ? { ...c, type: "finish" as const } : c,
+          const id = selectedControlId;
+          updateRaceCourse(
+            (rc) => ({ ...rc, controls: (rc.controls ?? []).map((c) => (c.id === id ? { ...c, type: "finish" as const } : c)) }),
+            "Set control type",
           );
-
-          updateRaceCourse({ controls: updatedControls });
           return;
         }
 
@@ -308,6 +267,7 @@ export default function CourseSetting() {
           onMuteChange={setIsMapMuted}
           showDifficultyColors={showDifficultyColors}
           onShowDifficultyColorsChange={setShowDifficultyColors}
+          difficultyProgress={difficultyProgress}
           autoAddToCourse={autoAddToCourse}
           onAutoAddToCourseChange={setAutoAddToCourse}
         />

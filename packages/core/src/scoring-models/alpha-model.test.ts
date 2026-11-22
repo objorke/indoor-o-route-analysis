@@ -158,7 +158,7 @@ describe('AlphaScoringModel', () => {
 
   describe('reference course normalization', () => {
     it('should score 100 for the shortest route of leg 3→4 on Bana 1 (Stockholm Indoor Cup 2023 E1)', () => {
-      const filePath = join(__dirname, '../../../../apps/web/public/examples/2023-02-04-Stockholm-Indoor-Cup-E1.json');
+      const filePath = join(__dirname, '../../../../test-data/events/2023-02-04-Stockholm-Indoor-Cup-E1.json');
       const event = parseEventFromJSON(readFileSync(filePath, 'utf-8'));
       const raceCourse = event.raceCourses![0];
       const course = raceCourse.courses![0];

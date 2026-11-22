@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { traceToExplanation } from "./human-route-explanation";
+import { ONE_WAY_PASSAGE_LABEL } from "./human-route";
 import { buildHumanRouteLabelResolver, type HumanRouteLabelResolver } from "./human-route-labels";
 import type { HumanRouteResult, RouteInfo } from "./route-analyzer";
 import type { Node } from "./models/graph";
@@ -265,5 +266,35 @@ describe("traceToExplanation — direction reasoning", () => {
     expect(messages[4].text).toBe(
       "Backtracking: To get to stair A on floor 2, we can come from stairs H and I. Let us try down H from floor 3.",
     );
+  });
+});
+
+describe("traceToExplanation — one-way passages", () => {
+  const result: HumanRouteResult = {
+    route: stubRoute(["S", "A", "B", "C", "D", "T"], ["1"]),
+    sameFloor: false,
+    forwardLabels: [ONE_WAY_PASSAGE_LABEL],
+    backwardLabels: ["1"],
+    explorationTrace: [
+      { order: 0, side: "tracking", cluster: "R1", candidates: [
+        { label: ONE_WAY_PASSAGE_LABEL, toCluster: "R2", distanceMeters: 5 },
+        { label: "2", toCluster: "R4", distanceMeters: 50 },
+      ] },
+      { order: 1, side: "backtracking", cluster: "R3", candidates: [{ label: "1", toCluster: "R2", distanceMeters: 5 }] },
+    ],
+    meetingAttempts: [{ order: 2, cluster: "R2", accepted: true }],
+    clusterOf: { S: "R1", T: "R3" },
+  };
+
+  it("spells the passage out instead of calling it a stair", () => {
+    const messages = traceToExplanation(result);
+    expect(messages[1].text).toContain("we can reach stair 2 and a one-way passage");
+    expect(messages[1].text).toContain("Let us try the one-way passage.");
+    expect(messages[1].text).not.toContain(ONE_WAY_PASSAGE_LABEL);
+  });
+
+  it("names it in the final plan", () => {
+    const messages = traceToExplanation(result);
+    expect(messages[messages.length - 1].text).toContain("the one-way passage, 1");
   });
 });

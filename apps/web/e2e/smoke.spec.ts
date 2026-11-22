@@ -37,8 +37,12 @@ test("import an example event populates the course list and renders the map", as
   // The event name appears in the top-right header once loaded.
   await expect(page.getByText(EXAMPLE_EVENT_NAME).first()).toBeVisible({ timeout: 10_000 });
 
+  // Examples open in Route Analysis with the first course already selected
+  await expect(page).toHaveURL(/\/route-analysis/);
+  await expect(page.getByRole("combobox", { name: "Course" })).not.toHaveText(/Select a course to analyze/);
+
   await page.getByRole("button", { name: /^Route Analysis$/ }).click();
-  const courseSelect = page.getByText("Select a course to analyze");
+  const courseSelect = page.getByRole("combobox", { name: "Course" });
   await expect(courseSelect).toBeVisible({ timeout: 10_000 });
   await courseSelect.click();
 
@@ -55,7 +59,7 @@ test("route analysis renders difficulty numbers for a known course, and survives
   await page.waitForTimeout(1000);
 
   await page.getByRole("button", { name: /^Route Analysis$/ }).click();
-  await page.getByText("Select a course to analyze").click();
+  await page.getByRole("combobox", { name: "Course" }).click();
   await page.getByRole("option", { name: EXAMPLE_COURSE_NAME, exact: true }).click();
 
   // Each leg row shows a distance ("7 m") and a difficulty category tag

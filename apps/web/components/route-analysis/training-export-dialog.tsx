@@ -17,7 +17,7 @@ import { RadioGroup, RadioGroupItem } from "@indoor-o-route-analysis/ui"
 import { Progress } from "@indoor-o-route-analysis/ui"
 import { downloadFile } from "@/components/shared"
 
-import { RouteAnalyzer, type RouteInfo } from "@indoor-o-route-analysis/core"
+import { createEventRouteAnalyzer, type RouteInfo } from "@indoor-o-route-analysis/core"
 import { analyzeCourseLegsGenerator, type Leg } from "@indoor-o-route-analysis/core"
 import { TrainingDataIO, type TrainingCourse } from "@indoor-o-route-analysis/core"
 import { TrainingDataXmlGenerator } from "@indoor-o-route-analysis/core"
@@ -30,7 +30,6 @@ interface TrainingExportDialogProps {
   courses: Course[]
   selectedCourseId: string | null
   event: EventData
-  mapScale: number
   scoringModel: ScoringModel
   runningSpeed: number
 }
@@ -41,7 +40,6 @@ export function TrainingExportDialog({
   courses,
   selectedCourseId,
   event,
-  mapScale,
   scoringModel,
 }: TrainingExportDialogProps) {
   const [format, setFormat] = useState<"json" | "xml">("json")
@@ -71,14 +69,7 @@ export function TrainingExportDialog({
       const totalOperations = coursesToExport.length
       let completedOperations = 0
       
-      const routeAnalyzer = new RouteAnalyzer(
-        event.raceCourses?.[0]?.controls || [],
-        event.raceCourses?.[0]?.vertices || [],
-        event.raceCourses?.[0]?.edges || [],
-        mapScale,
-        scoringModel,
-        event.raceCourses?.[0]?.polygons || []
-      )
+      const routeAnalyzer = createEventRouteAnalyzer(event, { scoringModel })
       
       const analyzedCourses: TrainingCourse[] = []
 

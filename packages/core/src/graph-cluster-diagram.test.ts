@@ -43,6 +43,21 @@ describe("computeClusterGraphEdges", () => {
   });
 });
 
+describe("computeClusterGraphEdges between floor clusters", () => {
+  it("includes unlabeled edges that cross clusters (one-way and cross-floor), omits intra-cluster ones", () => {
+    const edges: Edge[] = [
+      { from: "A", to: "B", label: "" },
+      { from: "B", to: "C", label: "" },
+      { from: "A", to: "D", label: "", oneWay: true },
+    ];
+    const levelOf = (id: string) => ({ A: 0, B: 0, C: 1, D: 0 })[id];
+    const { clusterOf } = computeClusteredGraph(edges, levelOf);
+    const clusterEdges = computeClusterGraphEdges(edges, clusterOf);
+    expect(clusterEdges).toHaveLength(3); // B-C both ways + A->D
+    expect(clusterEdges.filter((e) => e.oneWay)).toHaveLength(1);
+  });
+});
+
 describe("clusterGraphToMermaid", () => {
   it("renders one node line per cluster and one directed edge line per traversable direction", () => {
     const { clusterOf, clusters } = computeClusteredGraph(edges);

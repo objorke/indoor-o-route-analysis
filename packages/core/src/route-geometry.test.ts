@@ -36,6 +36,18 @@ describe("calculateEdgeDistanceMeters", () => {
     expect(calculateEdgeDistanceMeters(edge, a, b, mapScale)).toBe(0);
   });
 
+  it("uses a hand-set edge length instead of the calculated one, also over ignoreLength", () => {
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", length: 7.5 }, a, b, mapScale)).toBe(7.5);
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", ignoreLength: true, length: 3 }, a, b, mapScale)).toBe(3);
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", length: 0 }, a, b, mapScale)).toBe(0);
+    // Invalid values fall back to the calculated length
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", length: -1 }, a, b, mapScale)).toBeCloseTo(1, 5);
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", length: Number.NaN }, a, b, mapScale)).toBeCloseTo(1, 5);
+    // Penalties still apply on top
+    const penalties = new Map([["a:b", 2]]);
+    expect(calculateEdgeDistanceMeters({ from: "a", to: "b", label: "", length: 7.5 }, a, b, mapScale, penalties)).toBe(15);
+  });
+
   it("applies a penalty multiplier keyed by from:to", () => {
     const edge: Edge = { from: "a", to: "b", label: "" };
     const penalties = new Map([["a:b", 2]]);

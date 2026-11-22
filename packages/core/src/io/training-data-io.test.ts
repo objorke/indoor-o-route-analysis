@@ -7,7 +7,7 @@ import { RouteAnalyzer } from "../route-analyzer";
 import { analyzeCourseLegs } from "../course-analysis";
 import { ScoringModelRegistry } from "../scoring-models";
 
-const EXAMPLE_FILE = path.join(process.cwd(), '../../apps/web/public/examples/2025-02-01-Stockholm-Indoor-Cup-E1.json');
+const EXAMPLE_FILE = path.join(process.cwd(), '../../test-data/events/2025-02-01-Stockholm-Indoor-Cup-E1.json');
 
 function loadExample() {
   const fileContent = fs.readFileSync(EXAMPLE_FILE, 'utf-8');

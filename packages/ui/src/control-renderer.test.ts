@@ -150,4 +150,69 @@ describe("ControlRenderer.renderControl", () => {
     );
     expect(withDot.querySelectorAll("circle").length).toBe(2);
   });
+
+  it("draws both circle and triangle for a map exchange control", () => {
+    const control = makeControl();
+    for (const type of ["change", "flip"] as const) {
+      const dom = renderToDom(
+        ControlRenderer.renderControl({
+          control,
+          courseControls: [control],
+          courseControlCodes: ["31"],
+          mapExchange: { type },
+        }),
+      );
+      expect(dom.querySelectorAll("circle").length).toBe(1);
+      const triangle = dom.querySelector('[data-testid="map-exchange-triangle"]');
+      expect(triangle).not.toBeNull();
+      expect(triangle!.getAttribute("points")!.split(" ").length).toBe(3);
+      // Triangle uses the same stroke color as the circle
+      expect(triangle!.getAttribute("stroke")).toBe(dom.querySelector("circle")!.getAttribute("stroke"));
+    }
+  });
+
+  it("points the map exchange triangle towards the next control", () => {
+    const control = makeControl();
+    const next = { x: control.x + 100, y: control.y };
+    const dom = renderToDom(
+      ControlRenderer.renderControl({
+        control,
+        courseControls: [control],
+        courseControlCodes: ["31"],
+        mapExchange: { type: "change", next },
+      }),
+    );
+    const [first] = dom.querySelector('[data-testid="map-exchange-triangle"]')!.getAttribute("points")!.split(" ");
+    const [x, y] = first.split(",").map(Number);
+    expect(x).toBeCloseTo(control.x + ControlRenderer.CONTROL_RADIUS); // pointing corner on the circle
+    expect(y).toBeCloseTo(control.y);
+  });
+
+  it("inscribes the map exchange triangle in the control circle (all corners on the circle)", () => {
+    const control = makeControl();
+    const dom = renderToDom(
+      ControlRenderer.renderControl({
+        control,
+        courseControls: [control],
+        courseControlCodes: ["31"],
+        mapExchange: { type: "flip", next: { x: control.x + 3, y: control.y + 50 } },
+      }),
+    );
+    const corners = dom
+      .querySelector('[data-testid="map-exchange-triangle"]')!
+      .getAttribute("points")!
+      .split(" ")
+      .map((p) => p.split(",").map(Number));
+    for (const [x, y] of corners) {
+      expect(Math.hypot(x - control.x, y - control.y)).toBeCloseTo(ControlRenderer.CONTROL_RADIUS, 1);
+    }
+  });
+
+  it("draws no triangle without a map exchange", () => {
+    const control = makeControl();
+    const dom = renderToDom(
+      ControlRenderer.renderControl({ control, courseControls: [control], courseControlCodes: ["31"] }),
+    );
+    expect(dom.querySelector('[data-testid="map-exchange-triangle"]')).toBeNull();
+  });
 });

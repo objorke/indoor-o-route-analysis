@@ -5,7 +5,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { parseEventFromJSON } from '@indoor-o-route-analysis/core';
-import { RouteAnalyzer } from '@indoor-o-route-analysis/core';
+import { createEventRouteAnalyzer, getEventScoringModel } from '@indoor-o-route-analysis/core';
 import { analyzeCourseLegs } from '@indoor-o-route-analysis/core';
 import { ScoringModelRegistry } from '@indoor-o-route-analysis/core';
 import type { EventData } from '@indoor-o-route-analysis/core';
@@ -14,7 +14,7 @@ import { getActualCourseControls } from '@indoor-o-route-analysis/core';
 console.log('🧪 Testing MCP Server Analysis Functionality\n');
 
 // Find the first example event
-const examplesDir = path.resolve('./public/examples');
+const examplesDir = path.resolve(import.meta.dirname, '../../test-data/events');
 const files = fs.readdirSync(examplesDir).filter(f => f.endsWith('.json') && f !== 'index.json');
 
 if (files.length === 0) {
@@ -72,16 +72,8 @@ try {
     const toControl = controls.find(c => c.id === toControlId);
 
     if (fromControl && toControl) {
-      const mapScale = raceCourse.maps?.[0]?.scale || 1000;
-      const scoringModel = ScoringModelRegistry.getDefaultModel();
-      const analyzer = new RouteAnalyzer(
-        controls,
-        nodes,
-        edges,
-        mapScale,
-        scoringModel,
-        raceCourse.polygons || []
-      );
+      const scoringModel = getEventScoringModel(event);
+      const analyzer = createEventRouteAnalyzer(event, { scoringModel });
 
       const routes = analyzer.findAlternativePathsBetweenControls(
         fromControlId,
@@ -101,16 +93,8 @@ try {
 
   // Test 5: Analyze course difficulty
   const testAnalysis = courses[0];
-  const mapScale = raceCourse.maps?.[0]?.scale || 1000;
-  const scoringModel = ScoringModelRegistry.getDefaultModel();
-  const analyzer = new RouteAnalyzer(
-    controls,
-    nodes,
-    edges,
-    mapScale,
-    scoringModel,
-    raceCourse.polygons || []
-  );
+  const scoringModel = getEventScoringModel(event);
+  const analyzer = createEventRouteAnalyzer(event, { scoringModel });
 
   const { legs } = analyzeCourseLegs(testAnalysis, event, analyzer, false);
 

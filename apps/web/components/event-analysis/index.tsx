@@ -53,7 +53,6 @@ export default function EventAnalysis() {
         const nodes = (selectedEvent.raceCourses?.[0]?.vertices || []) as Node[];
         const edges = selectedEvent.raceCourses?.[0]?.edges || [];
         const controls = selectedEvent.raceCourses?.[0]?.controls || [];
-        const mapScale = activeMap?.scale || 1000;
         
         setIsAnalyzing(true);
         setProgress(0);
@@ -61,7 +60,7 @@ export default function EventAnalysis() {
         setNodeTraffic(new Map());
 
         try {
-            const generator = calculateEventTrafficGenerator(selectedEvent, nodes, edges, controls, mapScale, targetCourseId);
+            const generator = calculateEventTrafficGenerator(selectedEvent, nodes, edges, controls, targetCourseId);
 
             for await (const update of generator) {
                 if (cancelled) break;

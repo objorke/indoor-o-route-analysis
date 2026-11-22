@@ -2,7 +2,7 @@
 
 import React, { useMemo, useCallback, useState, useEffect } from "react";
 import MapViewer, { type MapViewerState, type MapViewerController, eventPosToMultiPagePixels } from "@/components/map-viewer";
-import { useAppData, buildRoutePathSegments } from "@indoor-o-route-analysis/ui";
+import { useAppData, buildRoutePathSegments, renderRoutePolylines } from "@indoor-o-route-analysis/ui";
 import type { MapData } from "@indoor-o-route-analysis/core";
 import type { Control } from "@indoor-o-route-analysis/core";
 import type { Node, Edge } from "@indoor-o-route-analysis/core";
@@ -10,7 +10,11 @@ import type { Polygon } from "@indoor-o-route-analysis/core";
 import { 
   CONTROL_RADIUS, 
   GRAPH_NODE_RADIUS,
-  GRAPH_EDGE_COLOR
+  GRAPH_EDGE_COLOR,
+  PRIMARY_ROUTE_COLOR,
+  ROUTE_ANALYSIS_COLORS,
+  PRIMARY_ROUTE_STROKE_WIDTH,
+  ALTERNATIVE_ROUTE_STROKE_WIDTH,
 } from "@indoor-o-route-analysis/core";
 
 import type { AnalysisResult } from "./analysis-logic";
@@ -292,8 +296,8 @@ const MapOverlay = ({
           }
       }
 
-      // Helper to generate polyline elements
-      const createRouteElements = (path: string[], color: string, width: number, opacity: number, dash?: string) => {
+      // Route polylines, rendered the same way as in Route Analysis (shared renderer, solid lines)
+      const createRouteElements = (path: string[], color: string, strokeWidth: number) => {
          if (!mapState.pixelsPerMM) return null;
 
          const points = path.map(id => getPixelPos(id)).filter(Boolean) as {x:number, y:number}[];
@@ -303,32 +307,21 @@ const MapOverlay = ({
            path,
            getPixelPos,
            (fromId, toId) => !!edges.find(e => (e.from === fromId && e.to === toId) || (!e.oneWay && e.from === toId && e.to === fromId))?.ignoreLength,
-         ).filter(seg => !seg.isMapSegmentTransition);
-
-         return (
-             <g>
-                {segments.map((seg, i) => {
-                    const pts = seg.points.map(p => `${p.x},${p.y}`).join(" ");
-                    return (
-                        <g key={i}>
-                            {/* White halo for visibility */}
-                            <polyline points={pts} stroke="white" strokeWidth={width + 4} strokeOpacity={0.8} fill="none" strokeDasharray={dash} strokeLinecap="round" strokeLinejoin="round" />
-                            <polyline points={pts} stroke={color} strokeWidth={width} strokeOpacity={opacity} fill="none" strokeDasharray={dash} strokeLinecap="round" strokeLinejoin="round" />
-                        </g>
-                    );
-                })}
-             </g>
          );
+
+         return <g>{renderRoutePolylines(segments, { color, strokeWidth })}</g>;
       };
       
-      // Original route is always visible (dashed, green)
-      const originalRoutePolylines = originalRoute ? createRouteElements(originalRoute.path, "#22c55e", 3, 0.8, "6,4") : null;
+      // Original route: strong red, like the best route in Route Analysis
+      const originalRoutePolylines = originalRoute
+          ? createRouteElements(originalRoute.path, PRIMARY_ROUTE_COLOR, PRIMARY_ROUTE_STROKE_WIDTH)
+          : null;
       
-      // Displayed route (selected result) - bright cyan/blue - only show if different from original
+      // Displayed route (selected result) - Route Analysis' second route color - only if different from original
       const isDisplayedDifferentFromOriginal = displayedRoute && originalRoute && 
           displayedRoute.path.join(',') !== originalRoute.path.join(',');
       const routePolylines = isDisplayedDifferentFromOriginal 
-          ? createRouteElements(displayedRoute.path, GRAPH_EDGE_COLOR, 4, 1) 
+          ? createRouteElements(displayedRoute.path, ROUTE_ANALYSIS_COLORS[1], ALTERNATIVE_ROUTE_STROKE_WIDTH) 
           : null;
 
       // Start/End Circles from Route (legacy support, or keep for simple analysis)

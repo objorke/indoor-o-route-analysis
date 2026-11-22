@@ -1,10 +1,11 @@
 "use client"
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
-import { Edit3, Route, Settings, BarChart3, Circle, Box, PenTool, Pickaxe, FlaskConical } from "lucide-react";
+import { Edit3, Layers, Route, Settings, BarChart3, Circle, Box, PenTool, Pickaxe, FlaskConical } from "lucide-react";
 import { Button } from "@indoor-o-route-analysis/ui";
 import EventManager from "@/components/event-manager";
 import CourseSetting from "@/components/course-setting";
+import DirectionsView from "@/components/directions";
 import GraphEditor from "@/components/graph-editor";
 import RouteBuilder from "@/components/route-builder";
 import Model3D from "@/components/model-3d";
@@ -14,14 +15,18 @@ import LabsPage from "@/components/labs";
 import ModifyGraphPage from "@/components/modify-graph";
 import LandingPage from "@/components/landing-page";
 import FileMenu from "@/components/file-menu";
+import { useUndoRedoShortcuts } from "@/components/use-undo-redo-shortcuts";
+import { NotificationHost } from "@indoor-o-route-analysis/ui";
 import { PreviewWarning } from "@/components/preview-warning";
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import { useFeatureFlags } from "@indoor-o-route-analysis/ui";
-import { processImportedJSON } from "@indoor-o-route-analysis/core";
+import { processImportedJSON, resolveLoadExampleParam } from "@indoor-o-route-analysis/core";
+import { getMapFile } from "@indoor-o-route-analysis/core/storage";
 
 type Screen =
   | "landing"
   | "event-manager"
+  | "directions"
   | "course-setting"
   | "graph-editor"
   | "route-builder"
@@ -32,7 +37,7 @@ type Screen =
   | "model-3d";
 
 const NAVIGABLE_SCREENS: Screen[] = [
-  "event-manager", "course-setting", "graph-editor", "route-builder",
+  "event-manager", "directions", "course-setting", "graph-editor", "route-builder",
   "route-analysis", "event-analysis", "labs", "modify-graph", "model-3d",
 ];
 
@@ -49,9 +54,18 @@ function pathnameForScreen(screen: Screen): string {
 
 export default function App() {
   const [activeScreen, setActiveScreenState] = useState<Screen>("event-manager");
-  const [loadedExampleFile, setLoadedExampleFile] = useState<string | null>(null);
+  // Event id → URL the event was loaded from (example repositories); used for share links
+  const [exampleSourceUrls, setExampleSourceUrls] = useState<Record<string, string>>({});
+  // Example just opened: Route Analysis selects its first leg once (see RouteAnalysis)
+  const [selectFirstLegForEventId, setSelectFirstLegForEventId] = useState<string | null>(null);
+  const handleExampleLoaded = useCallback((eventId: string, url: string) => {
+    setExampleSourceUrls((prev) => ({ ...prev, [eventId]: url }));
+    setSelectFirstLegForEventId(eventId);
+  }, []);
+  const clearSelectFirstLeg = useCallback(() => setSelectFirstLegForEventId(null), []);
   const { selectedEvent, unsavedChanges, addEvent, setSelectedCourseId } = useAppData();
   const { flags } = useFeatureFlags();
+  useUndoRedoShortcuts();
 
   // Pending course name from URL — applied once the event is loaded
   const pendingCourseNameRef = useRef<string | null>(null);
@@ -82,8 +96,10 @@ export default function App() {
     }
 
     if (loadExample) {
-      // Security: reject path traversal and non-filename characters
-      if (/[/\\]|\.\./.test(loadExample)) {
+      // A filename in the default example repository, or an absolute http(s) URL.
+      // Security: plain filenames only (path traversal is rejected).
+      const exampleUrl = resolveLoadExampleParam(loadExample);
+      if (!exampleUrl) {
         console.error("Invalid example filename");
         setActiveScreenState(targetScreen);
         return;
@@ -91,23 +107,19 @@ export default function App() {
 
       (async () => {
         try {
-          const res = await fetch("/examples/" + loadExample);
+          const res = await fetch(exampleUrl);
           if (!res.ok) throw new Error("Failed to fetch example");
           const data = await res.json();
-          const { event: newEvent, pdfData } = await processImportedJSON(data);
+          const { event: newEvent, pdfData } = await processImportedJSON(data, getMapFile);
           newEvent.id = crypto.randomUUID();
           await addEvent(newEvent, pdfData, true);
-          setLoadedExampleFile(loadExample);
+          handleExampleLoaded(newEvent.id, exampleUrl);
 
-          // Select course by name if specified
-          if (courseName) {
-            const courses = newEvent.raceCourses?.[0]?.courses;
-            const matched = courses?.find((c) => c.name === courseName);
-            if (matched) {
-              setSelectedCourseId(matched.id);
-              pendingCourseNameRef.current = null;
-            }
-          }
+          // Select the course named in the URL, else the first course (like opening an example from the File menu)
+          const courses = newEvent.raceCourses?.[0]?.courses;
+          const matched = courseName ? courses?.find((c) => c.name === courseName) : undefined;
+          if (matched) pendingCourseNameRef.current = null;
+          setSelectedCourseId((matched ?? courses?.[0])?.id ?? null);
         } catch (e) {
           console.error("Failed to load example from URL:", e);
         }
@@ -155,13 +167,14 @@ export default function App() {
 
   return (
     <div className="flex h-screen flex-col bg-background">
+      <NotificationHost />
       {/* Top Toolbar - Menu Bar Style */}
       <header
         className="flex h-8 items-center border-b border-border bg-card select-none"
       >
         {/* FileMenu */}
         <div>
-          <FileMenu onNavigate={(screen) => navigateToScreen(screen as Screen)} />
+          <FileMenu onNavigate={(screen) => navigateToScreen(screen as Screen)} onExampleLoaded={handleExampleLoaded} />
         </div>
 
         <div
@@ -174,8 +187,20 @@ export default function App() {
             size="sm"
           >
             <Settings className="h-4 w-4" />
-            {"Event Manager"}
+            {"Event"}
           </Button>
+          {flags.directions && (
+          <Button
+            variant={activeScreen === "directions" ? "default" : "ghost"}
+            onClick={() => navigateToScreen("directions")}
+            className="h-8 px-2 gap-1 rounded-none"
+            size="sm"
+          >
+            <Layers className="h-4 w-4" />
+            {"Directions"}
+          </Button>
+          )}
+          {flags.courseSetting && (
           <Button
             variant={activeScreen === "course-setting" ? "default" : "ghost"}
             onClick={() => navigateToScreen("course-setting")}
@@ -185,6 +210,7 @@ export default function App() {
             <Edit3 className="h-4 w-4" />
             {"Course Setting"}
           </Button>
+          )}
           <Button
             variant={activeScreen === "model-3d" ? "default" : "ghost"}
             onClick={() => navigateToScreen("model-3d")}
@@ -192,7 +218,7 @@ export default function App() {
             size="sm"
           >
             <Box className="h-4 w-4" />
-            {"3D Model"}
+            {"Floors"}
           </Button>
           <Button
             variant={activeScreen === "graph-editor" ? "default" : "ghost"}
@@ -201,7 +227,7 @@ export default function App() {
             size="sm"
           >
             <Route className="h-4 w-4" />
-            {"Graph Editor"}
+            {"Graph"}
           </Button>
           {flags.routeBuilder && (
           <Button
@@ -286,7 +312,9 @@ export default function App() {
         <LandingPage />
       ) : activeScreen === "event-manager" ? (
         <EventManager />
-      ) : activeScreen === "course-setting" ? (
+      ) : activeScreen === "directions" && flags.directions ? (
+        <DirectionsView />
+      ) : activeScreen === "course-setting" && flags.courseSetting ? (
         <CourseSetting />
       ) : activeScreen === "modify-graph" ? (
         <ModifyGraphPage />
@@ -295,7 +323,11 @@ export default function App() {
       ) : activeScreen === "route-builder" ? (
         <RouteBuilder />
       ) : activeScreen === "route-analysis" ? (
-        <RouteAnalysis loadedExampleFile={loadedExampleFile} />
+        <RouteAnalysis
+          exampleSourceUrls={exampleSourceUrls}
+          selectFirstLegForEventId={selectFirstLegForEventId}
+          onFirstLegSelected={clearSelectFirstLeg}
+        />
       ) : activeScreen === "event-analysis" ? (
         <EventAnalysis />
       ) : activeScreen === "labs" ? (

@@ -65,7 +65,17 @@ export interface MapViewerController {
   setZoom: (newZoom: number) => void;
   getCanvas: () => HTMLCanvasElement | null;
   frameItem: (target: { x: number; y: number }, targetZoom?: number) => void;
+  /** Zoom and centre so the whole map fits in the view (with a small margin). */
+  fitToView: () => void;
+  /** Multiply the zoom by `factor`, keeping the centre of the view fixed. */
+  zoomBy: (factor: number) => void;
 }
+
+/** Zoom limits shared by wheel, keyboard, pinch and the controller. */
+const MIN_ZOOM = 0.1;
+const MAX_ZOOM = 10;
+/** Fraction of the view left free around the map by fitToView. */
+const FIT_MARGIN = 0.03;
 
 export default function MapViewer({
   pdfUrl,
@@ -101,6 +111,7 @@ export default function MapViewer({
   const panAnimRef = useRef<number | null>(null);
   const panRef = useRef({ x: 0, y: 0 });
   const zoomRef = useRef(1);
+  const pdfDimensionsRef = useRef({ width: 0, height: 0 });
   const innerDivRef = useRef<HTMLDivElement>(null);
   const touchRef = useRef<{
     startPan: { x: number; y: number };
@@ -357,6 +368,10 @@ export default function MapViewer({
     };
   }, [pdfUrl, showBackgroundMap, mapLayout, currentPage, clearCanvas, initialFit]);
 
+  useEffect(() => {
+    pdfDimensionsRef.current = pdfDimensions;
+  }, [pdfDimensions]);
+
   // Provide controller to parent
   useEffect(() => {
     if (!onControllerReady) return;
@@ -432,7 +447,7 @@ export default function MapViewer({
       getPan: () => panRef.current,
       getZoom: () => zoomRef.current,
       setZoom: (newZoom: number) => {
-        const clamped = Math.max(0.1, Math.min(newZoom, 10));
+        const clamped = Math.max(MIN_ZOOM, Math.min(newZoom, MAX_ZOOM));
         zoomRef.current = clamped;
         setZoom(clamped);
       },
@@ -473,6 +488,31 @@ export default function MapViewer({
         };
         panAnimRef.current = requestAnimationFrame(step);
       },
+      fitToView: () => {
+        cancelPanAnimation();
+        const { width, height } = pdfDimensionsRef.current;
+        if (!containerRef.current || !(width > 0) || !(height > 0)) return;
+        const { clientWidth, clientHeight } = containerRef.current;
+        const fit = Math.min(clientWidth / width, clientHeight / height) * (1 - 2 * FIT_MARGIN);
+        const newZoom = Math.max(MIN_ZOOM, Math.min(fit, MAX_ZOOM));
+        zoomRef.current = newZoom;
+        setZoom(newZoom);
+        updatePan({ x: (clientWidth - width * newZoom) / 2, y: (clientHeight - height * newZoom) / 2 });
+      },
+      zoomBy: (factor) => {
+        cancelPanAnimation();
+        if (!containerRef.current) return;
+        const { clientWidth, clientHeight } = containerRef.current;
+        const currentZoom = zoomRef.current;
+        const newZoom = Math.max(MIN_ZOOM, Math.min(currentZoom * factor, MAX_ZOOM));
+        const ratio = newZoom / currentZoom;
+        const cx = clientWidth / 2;
+        const cy = clientHeight / 2;
+        const p = panRef.current;
+        zoomRef.current = newZoom;
+        setZoom(newZoom);
+        updatePan({ x: cx - (cx - p.x) * ratio, y: cy - (cy - p.y) * ratio });
+      },
     };
     onControllerReady(controller);
     return () => {
@@ -497,7 +537,7 @@ export default function MapViewer({
       // fire before React re-renders
       const currentZoom = zoomRef.current;
       const delta = e.deltaY > 0 ? 0.9 : 1.1;
-      const newZoom = Math.min(Math.max(currentZoom * delta, 0.1), 10);
+      const newZoom = Math.min(Math.max(currentZoom * delta, MIN_ZOOM), MAX_ZOOM);
 
       const zoomRatio = newZoom / currentZoom;
       const currentPan = panRef.current;
@@ -579,7 +619,7 @@ export default function MapViewer({
         const currentMidpoint = getTouchMidpoint(touches[0], touches[1], rect);
 
         const scale = currentDistance / touchRef.current.startDistance;
-        const newZoom = Math.min(Math.max(touchRef.current.startZoom * scale, 0.1), 10);
+        const newZoom = Math.min(Math.max(touchRef.current.startZoom * scale, MIN_ZOOM), MAX_ZOOM);
         const zoomRatio = newZoom / touchRef.current.startZoom;
 
         // Zoom around the initial midpoint, then shift by midpoint movement (pan)
@@ -759,7 +799,7 @@ export default function MapViewer({
         const mouseY = lastMousePos?.y ?? (containerRef.current?.clientHeight ?? 0) / 2;
 
         const delta = 1.1;
-        const newZoom = Math.min(Math.max(zoom * delta, 0.1), 10);
+        const newZoom = Math.min(Math.max(zoom * delta, MIN_ZOOM), MAX_ZOOM);
         const zoomRatio = newZoom / zoom;
 
         setPan((prev) => ({
@@ -773,7 +813,7 @@ export default function MapViewer({
         const mouseY = lastMousePos?.y ?? (containerRef.current?.clientHeight ?? 0) / 2;
 
         const delta = 0.9;
-        const newZoom = Math.min(Math.max(zoom * delta, 0.1), 10);
+        const newZoom = Math.min(Math.max(zoom * delta, MIN_ZOOM), MAX_ZOOM);
         const zoomRatio = newZoom / zoom;
 
         setPan((prev) => ({

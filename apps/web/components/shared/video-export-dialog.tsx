@@ -14,6 +14,7 @@ import {
 } from "@indoor-o-route-analysis/ui";
 import { RadioGroup, RadioGroupItem } from "@indoor-o-route-analysis/ui";
 import type { VideoExportSettings } from "@indoor-o-route-analysis/core/export";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 interface VideoExportDialogProps {
   open: boolean;
@@ -108,7 +109,7 @@ export function VideoExportDialog({
     }
     
     if (isNaN(seconds) || seconds <= 0) {
-        alert("Invalid duration");
+        notify("Invalid duration", { kind: "error" });
         return;
     }
 
@@ -116,7 +117,7 @@ export function VideoExportDialog({
     if (quality === 'custom') {
         const mbps = parseFloat(customBitrate);
         if (isNaN(mbps) || mbps <= 0) {
-            alert("Invalid custom bitrate");
+            notify("Invalid custom bitrate", { kind: "error" });
             return;
         }
         exportBitrate = mbps * 1_000_000;
@@ -329,7 +330,7 @@ export function VideoExportDialog({
              </div>
           )}
         </div>
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-gray-50/50">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-muted/30">
             {isExporting ? (
                  <Button size="sm" variant="destructive" onClick={onCancel}>
                     Cancel Export

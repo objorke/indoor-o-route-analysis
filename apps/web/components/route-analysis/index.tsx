@@ -3,16 +3,17 @@
 import { useState, useEffect, useMemo, useCallback, useRef, startTransition } from "react";
 import dynamic from "next/dynamic";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { getActiveMap } from "@indoor-o-route-analysis/core";
+import { getActiveMap, getEventMapScale } from "@indoor-o-route-analysis/core";
 import { usePdfUrl } from "@indoor-o-route-analysis/ui";
 import type { MapData } from "@indoor-o-route-analysis/core";
 import type { RouteInfo } from "@indoor-o-route-analysis/core";
 import RouteAnalysisPropertiesPanel from "./properties-panel";
 import { VideoExportDialog, type VideoExportSettings } from "@/components/shared/video-export-dialog";
-import { ExportNaming } from "@indoor-o-route-analysis/core";
+import { ExportNaming, resolveLoadExampleParam, toLoadExampleParam } from "@indoor-o-route-analysis/core";
 import { getCourseControlLabels, getActualCourseControls } from "@indoor-o-route-analysis/core";
 import type { RouteAnalysisMapViewerHandle } from "./map-viewer";
 import type { RouteAnalysisModelViewerHandle } from "./model-viewer";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 const RouteAnalysisMapViewer = dynamic<{
   map?: MapData;
@@ -44,14 +45,21 @@ const RouteAnalysisModelViewer = dynamic(() => import("./model-viewer"), {
   loading: () => <div className="flex-1" />,
 });
 
-export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile?: string | null }) {
+type RouteAnalysisProps = {
+  exampleSourceUrls?: Record<string, string>;
+  /** When this event is selected (an example was just opened), select the first leg once. */
+  selectFirstLegForEventId?: string | null;
+  onFirstLegSelected?: () => void;
+};
+
+export default function RouteAnalysis({ exampleSourceUrls, selectFirstLegForEventId, onFirstLegSelected }: RouteAnalysisProps) {
   const { selectedEvent, selectedCourseId, setSelectedCourseId, pdfBlobUrl, runningSpeed, eventFilenames } = useAppData();
 
   const [viewMode, setViewMode] = useState<"map" | "3d">("map");
   const [selectedLeg, setSelectedLeg] = useState<number | null>(null);
   const [selectedRoute, setSelectedRoute] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
-  const [mapScale, setMapScale] = useState<number>(1);
+
   const [showBackgroundMap, setShowBackgroundMap] = useState(true);
   const [isMapMuted, setIsMapMuted] = useState(false);
   const [showEdges, setShowEdges] = useState(false);
@@ -109,29 +117,15 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
   
   const routeName = selectedRoute !== null ? `Route ${selectedRoute + 1}` : null;
 
+  // `?load-example=` value for share links: a filename for files in the default example
+  // repository, otherwise the absolute URL the event was loaded from.
   const shareableExampleFile = useMemo(() => {
-    const source = loadedExampleFile ?? eventFilenames[selectedEvent?.id ?? ""] ?? selectedEvent?.eventUrl ?? null;
-    if (!source) return null;
-
-    let normalized = source.trim();
-
-    // Accept absolute URLs by extracting their pathname filename.
-    try {
-      if (/^[a-zA-Z][a-zA-Z\d+.-]*:\/\//.test(normalized)) {
-        normalized = new URL(normalized).pathname;
-      }
-    } catch {
-      // Keep original value if URL parsing fails.
-    }
-
-    normalized = normalized.replace(/^\/+/, "");
-    normalized = normalized.replace(/^examples\//, "");
-    normalized = normalized.replace(/^\.\//, "");
-    normalized = normalized.split("?")[0]?.split("#")[0] ?? "";
-
-    if (/[/\\]|\.\./.test(normalized)) return null;
-    return normalized || null;
-  }, [loadedExampleFile, eventFilenames, selectedEvent]);
+    const sourceUrl = exampleSourceUrls?.[selectedEvent?.id ?? ""];
+    if (sourceUrl) return toLoadExampleParam(sourceUrl);
+    // Fallback: the event's filename, assumed to exist in the default repository
+    const filename = eventFilenames[selectedEvent?.id ?? ""];
+    return filename && resolveLoadExampleParam(filename) ? filename : null;
+  }, [exampleSourceUrls, eventFilenames, selectedEvent]);
 
   useEffect(() => {
     const handleExportRequest = () => setShowVideoExportDialog(true);
@@ -197,7 +191,7 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
                    console.log("Export cancelled");
                } else {
                    console.error(e);
-                   alert("Export failed: " + (e instanceof Error ? e.message : String(e)));
+                   notify("Export failed: " + (e instanceof Error ? e.message : String(e)), { kind: "error" });
                }
           } finally {
                setIsMapExporting(false);
@@ -243,7 +237,7 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
            console.log("Export cancelled");
        } else {
            console.error(e);
-           alert("Export failed: " + (e instanceof Error ? e.message : String(e)));
+           notify("Export failed: " + (e instanceof Error ? e.message : String(e)), { kind: "error" });
        }
     } finally {
       setIsMapExporting(false);
@@ -327,7 +321,7 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
              console.log("Video export cancelled");
         } else {
              console.error("Video export error:", err);
-             alert("Video export failed: " + (err instanceof Error ? err.message : String(err)));
+             notify("Video export failed: " + (err instanceof Error ? err.message : String(err)), { kind: "error" });
         }
     } finally {
         setIsExportingVideo(false);
@@ -355,6 +349,25 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
     const filteredControls = getActualCourseControls(course.controls, allControls);
     return Math.max(0, filteredControls.length - 1);
   }, [selectedCourseId, selectedEvent]);
+
+  // Opening an example selects its first course (File menu / ?load-example=) and here its
+  // first leg and that leg's first route
+  useEffect(() => {
+    if (!selectFirstLegForEventId || selectedEvent?.id !== selectFirstLegForEventId || !selectedCourseId) return;
+    if (totalLegs > 0) {
+      if (selectedLeg === 0) {
+        setSelectedRoute(0);
+      } else {
+        // The leg-change effect below picks route 0 instead of clearing the route
+        keepRouteOnAdvanceRef.current = true;
+        setSelectedLeg(0);
+      }
+    } else {
+      setSelectedLeg(null);
+    }
+    onFirstLegSelected?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot on request; selectedLeg read, not tracked
+  }, [selectFirstLegForEventId, selectedEvent?.id, selectedCourseId, totalLegs, onFirstLegSelected]);
 
   const handlePlaybackTimeUpdate = useCallback((currentTime: number, totalTime: number) => {
     startTransition(() => {
@@ -389,12 +402,8 @@ export default function RouteAnalysis({ loadedExampleFile }: { loadedExampleFile
     }, 0);
   }, [autoAdvance, selectedLeg, selectedRoute, totalLegs]);
 
-  // Update map scale when map changes
-  useEffect(() => {
-    if (activeMap?.scale) {
-      setMapScale(activeMap.scale);
-    }
-  }, [activeMap]);
+  // Map scale of the course's map (same source as every route analyzer)
+  const mapScale = getEventMapScale(selectedEvent, selectedCourseId);
 
   // Reset selectedRoute when leg changes. When auto-advancing with a route
   // selected, keep the first route on the next leg instead of clearing it.

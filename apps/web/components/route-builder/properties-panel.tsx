@@ -22,6 +22,7 @@ import { Input } from "@indoor-o-route-analysis/ui";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@indoor-o-route-analysis/ui";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@indoor-o-route-analysis/ui";
 import type { CustomRoute } from "@indoor-o-route-analysis/core";
+import { getEventScoringModel } from "@indoor-o-route-analysis/core";
 import type { Edge } from "@indoor-o-route-analysis/core";
 import { LegName } from "@/components/leg-name";
 import { DifficultyTag } from "@/components/route-analysis/difficulty-tag";
@@ -441,7 +442,7 @@ export default function RouteBuilderPropertiesPanel({
                     {leg.routeTimeDiff !== 0 ? (leg.routeTimeDiff > 0 ? "+" : "") + formatTime(leg.routeTimeDiff) : "-"}
                   </div>
                   <div className="text-right">
-                    <DifficultyTag difficulty={leg.difficulty} size="sm" />
+                    <DifficultyTag difficulty={leg.difficulty} size="sm" scoringModel={getEventScoringModel(selectedEvent)} />
                   </div>
                 </div>
               ))}

@@ -11,7 +11,7 @@ import {
   GRAPH_NODE_RADIUS,
   GRAPH_DEAD_END_COLOR,
 } from "@indoor-o-route-analysis/core";
-import { findDeadEndEdgeIds, edgeKey } from "@indoor-o-route-analysis/core";
+import { findDeadEndEdgeIds, edgeKey, removeControl, mergeRaceCourse, updateRaceCourse, verifyGraph as verifyGraphOf, connectOverlapping, edgeLengthOverride, type ConnectOverlappingResult, type GraphFinding } from "@indoor-o-route-analysis/core";
 
 /** Properties of a selected graph element (node, edge, or control). */
 export type SelectedNodeProperties = Node & { type: "node" };
@@ -19,12 +19,7 @@ export type SelectedEdgeProperties = Edge & { type: "edge"; edgeLength?: number 
 export type SelectedControlProperties = Omit<Control, "type"> & { type: "control" };
 export type SelectedProperties = SelectedNodeProperties | SelectedEdgeProperties | SelectedControlProperties;
 
-export type GraphFinding = {
-  type: "disconnected" | "overlap" | "self-loop" | "invalid-edge" | "out-of-bounds";
-  message: string;
-  elementId?: string;
-  elementType?: "node" | "edge" | "control";
-};
+export type { GraphFinding } from "@indoor-o-route-analysis/core";
 
 interface GraphEditorMapViewerProps {
   map?: MapData;
@@ -45,7 +40,9 @@ export interface GraphEditorMapViewerHandle {
   selectItem: (type: "node" | "edge" | "control", id: string) => void;
   deleteItem: (type: "node" | "edge" | "control", id: string) => void;
   clearGraph: () => void;
-  connectOverlappingControls: () => number;
+  connectOverlapping: () => ConnectOverlappingResult;
+  /** Reverse the selected edge's direction; false when no edge is selected. */
+  reverseSelectedEdge: () => boolean;
 }
 
 const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorMapViewerProps>(
@@ -68,13 +65,18 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
     // Color constant for edges and nodes
     const EDGE_COLOR = GRAPH_EDGE_COLOR;
 
-    const { selectedEvent, updateEventData } = useAppData();
+    const { selectedEvent, updateEvent } = useAppData();
     const clickedEdgeRef = useRef<string | null>(null);
     const clickedNodeRef = useRef<string | null>(null);
     const [nodes, setNodes] = useState<Node[]>([]);
     const [edges, setEdges] = useState<Edge[]>([]);
     const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
     const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+    // Drop selections whose node/edge no longer exists (e.g. after undo)
+    useEffect(() => {
+      if (selectedNodeId && !nodes.some((n) => n.id === selectedNodeId)) setSelectedNodeId(null);
+      if (selectedEdgeId && !edges.some((e) => edgeKey(e) === selectedEdgeId)) setSelectedEdgeId(null);
+    }, [nodes, edges, selectedNodeId, selectedEdgeId]);
     const [selectedControlId, setSelectedControlId] = useState<string | null>(null);
     const [pointerEdgeId, setPointerEdgeId] = useState<string | null>(null);
     const [pointerDown, setPointerDown] = useState<{ x: number; y: number } | null>(null);
@@ -91,21 +93,19 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
 
     const updateRaceCourseGraph = useCallback(
       (updates: { nodes?: Node[]; edges?: Edge[]; controls?: Control[] }) => {
-        if (!selectedEvent) return;
-        const raceCourses = selectedEvent.raceCourses ?? [];
-        if (raceCourses.length === 0) return;
-
-        const raceCourse = { ...raceCourses[0] };
-
-        if (updates.nodes) raceCourse.vertices = updates.nodes;
-        if (updates.edges) raceCourse.edges = updates.edges;
-
-        if (updates.controls) raceCourse.controls = updates.controls;
-
-        const updatedRaceCourses = [raceCourse, ...raceCourses.slice(1)];
-        updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+        if (!selectedEvent?.raceCourses?.length) return;
+        // Merge into the latest event so other fields (courses, maps, …) edited meanwhile are kept
+        updateEvent(selectedEvent.id, (e) =>
+          mergeRaceCourse(e, {
+            ...(updates.nodes ? { vertices: updates.nodes } : {}),
+            ...(updates.edges ? { edges: updates.edges } : {}),
+            ...(updates.controls ? { controls: updates.controls } : {}),
+          }),
+          undefined,
+          { label: "Edit graph" },
+        );
       },
-      [selectedEvent, updateEventData],
+      [selectedEvent, updateEvent],
     );
 
     const nodeRadius = GRAPH_NODE_RADIUS;
@@ -314,121 +314,33 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
       updateRaceCourseGraph({ edges: edgesList });
     }, [updateRaceCourseGraph]);
 
+    /** Swap the selected edge's from/to (Ctrl/Cmd+R and the menu). Returns false without a selected edge. */
+    const reverseSelectedEdge = (): boolean => {
+      if (!selectedEdgeId) return false;
+      let reversedEdge: Edge | undefined;
+      const updatedEdges = edges.map((edge) => {
+        if (edgeKey(edge) === selectedEdgeId) {
+          reversedEdge = { ...edge, from: edge.to, to: edge.from };
+          return reversedEdge;
+        }
+        return edge;
+      });
+      if (!reversedEdge) return false;
+      saveEdgesToEvent(updatedEdges);
+      setSelectedEdgeId(edgeKey(reversedEdge));
+      if (onPropertiesChange) onPropertiesChange({ type: "edge", ...reversedEdge });
+      return true;
+    };
+
     useImperativeHandle(ref, () => ({
-      verifyGraph: (): GraphFinding[] => {
-        const findings: GraphFinding[] = [];
-
-        // 1. Overlap
-        const allItems: { id: string; x: number; y: number; type: "node" | "control" }[] = [];
-        nodes.forEach((n) => {
-          allItems.push({ ...n, type: "node" });
-        });
-        (selectedEvent?.raceCourses?.[0]?.controls ?? []).forEach((c) => {
-          allItems.push({ id: c.id, x: c.mapPosition.x, y: c.mapPosition.y, type: "control" });
-        });
-
-        for (let i = 0; i < allItems.length; i++) {
-          for (let j = i + 1; j < allItems.length; j++) {
-            const a = allItems[i];
-            const b = allItems[j];
-            // Uses simple euclidean distance on map coordinates (MM)
-            const dist = Math.hypot(a.x - b.x, a.y - b.y);
-            // Threshold 1.0 meter (assuming map coordinates are MM, 1000mm = 1m? No, user data says x=... let's check.
-            // If coords are pixels, 1.0 is tiny.
-            // But we treat them as 'MM' usually in codebase.
-            // If they are MM, 1.0mm is very close.
-            // 200mm radius? Control radius is 17px. 17px / (px/mm).
-            // Let's assume standard scale, 1.0 is safer for exact duplicates.
-            // Let's use 0.1 for basically exact overlap.
-            if (dist < 0.1) {
-              findings.push({
-                type: "overlap",
-                message: `Overlaps with ${b.type} ${b.id}`,
-                elementId: a.id,
-                elementType: a.type,
-              });
-            }
-          }
-        }
-
-        // 3. Edges checks
-        const nodeMap = new Map(allItems.map((i) => [i.id, i]));
-
-        edges.forEach((edge) => {
-          if (edge.from === edge.to) {
-            findings.push({
-              type: "self-loop",
-              message: "Edge connects node to itself",
-              elementId: edgeKey(edge),
-              elementType: "edge",
-            });
-          }
-
-          if (!nodeMap.has(edge.from)) {
-            findings.push({
-              type: "invalid-edge",
-              message: `Start node ${edge.from} missing`,
-              elementId: edgeKey(edge),
-              elementType: "edge",
-            });
-          }
-
-          if (!nodeMap.has(edge.to)) {
-            findings.push({
-              type: "invalid-edge",
-              message: `End node ${edge.to} missing`,
-              elementId: edgeKey(edge),
-              elementType: "edge",
-            });
-          }
-
-          // Level change is now calculated automatically from node positions
-          // No need to validate the levelChange property on edges
-        });
-
-        // 4. Out of bounds
-        const mapData = map ?? selectedEvent?.raceCourses?.[0]?.maps?.[0];
-        if (mapData) {
-          const isInBounds = (x: number, y: number): boolean => {
-            // For multi-page maps with manual per-page transforms, check against each page's bounding box
-            if (mapData.pageTransformMode === "manual" && mapData.pageTransforms?.length) {
-              return mapData.pageTransforms.some((pt) => {
-                const minX = Math.min(pt.topLeft.x, pt.bottomRight.x);
-                const maxX = Math.max(pt.topLeft.x, pt.bottomRight.x);
-                const minY = Math.min(pt.topLeft.y, pt.bottomRight.y);
-                const maxY = Math.max(pt.topLeft.y, pt.bottomRight.y);
-                return x >= minX && x <= maxX && y >= minY && y <= maxY;
-              });
-            }
-
-            // Single-page or automatic mode: use the global bounding box
-            let minX = 0;
-            let minY = 0;
-            let maxX = mapData.image?.width || 0;
-            let maxY = mapData.image?.height || 0;
-            if (mapData.mapPositionTopLeft && mapData.mapPositionBottomRight) {
-              minX = Math.min(mapData.mapPositionTopLeft.x, mapData.mapPositionBottomRight.x);
-              minY = Math.min(mapData.mapPositionTopLeft.y, mapData.mapPositionBottomRight.y);
-              maxX = Math.max(mapData.mapPositionTopLeft.x, mapData.mapPositionBottomRight.x);
-              maxY = Math.max(mapData.mapPositionTopLeft.y, mapData.mapPositionBottomRight.y);
-            }
-            return x >= minX && x <= maxX && y >= minY && y <= maxY;
-          };
-
-          allItems.forEach((item) => {
-            if (!isInBounds(item.x, item.y)) {
-              findings.push({
-                type: "out-of-bounds",
-                message: "Position is outside map area",
-                elementId: item.id,
-                elementType: item.type,
-              });
-            }
-          });
-        }
-
-        return findings;
-      },
+      verifyGraph: (): GraphFinding[] =>
+        verifyGraphOf({
+          nodes,
+          edges,
+          controls: selectedEvent?.raceCourses?.[0]?.controls ?? [],
+          map: map ?? selectedEvent?.raceCourses?.[0]?.maps?.[0],
+          polygons: selectedEvent?.raceCourses?.[0]?.polygons ?? [],
+        }),
       selectItem: (type, id) => {
         const state = lastStateRef.current;
         if (!state) return;
@@ -496,13 +408,13 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
           if (selectedEvent) {
             const rc = selectedEvent.raceCourses?.[0];
             if (rc) {
-              const updatedControls = (rc.controls ?? []).filter((c) => c.id !== id);
+              // Shared helper: removes the control, its course entries and its graph edges
               const updatedEdges = edges.filter((e) => e.from !== id && e.to !== id);
-
-              const updatedRaceCourses = (selectedEvent.raceCourses ?? []).map((c, i) =>
-                i === 0 ? { ...c, controls: updatedControls, edges: updatedEdges } : c,
+              updateEvent(selectedEvent.id, (ev) =>
+                updateRaceCourse(ev, (latest) => ({ ...removeControl(latest, id), edges: updatedEdges })),
+                undefined,
+                { label: "Delete control" },
               );
-              updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
               setEdges(updatedEdges);
             }
           }
@@ -517,42 +429,17 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
         setSelectedEdgeId(null);
         setSelectedControlId(null);
       },
-      connectOverlappingControls: (): number => {
-        const controls = selectedEvent?.raceCourses?.[0]?.controls ?? [];
-        if (controls.length < 2) return 0;
-
-        const OVERLAP_THRESHOLD = 2.0; // mm
-        let addedCount = 0;
-        const currentEdges = [...edges];
-
-        for (let i = 0; i < controls.length; i++) {
-          for (let j = i + 1; j < controls.length; j++) {
-            const a = controls[i];
-            const b = controls[j];
-            const dist = Math.hypot(a.mapPosition.x - b.mapPosition.x, a.mapPosition.y - b.mapPosition.y);
-            if (dist > OVERLAP_THRESHOLD) continue;
-
-            // Check if edge already exists between these two controls (in either direction)
-            const exists = currentEdges.some(
-              (e) => (e.from === a.id && e.to === b.id) || (e.from === b.id && e.to === a.id),
-            );
-            if (exists) continue;
-
-            const newEdge: Edge = {
-              from: a.id,
-              to: b.id,
-              label: "",
-              ignoreLength: true,
-            };
-            currentEdges.push(newEdge);
-            addedCount++;
-          }
-        }
-
-        if (addedCount > 0) {
-          saveEdgesToEvent(currentEdges);
-        }
-        return addedCount;
+      reverseSelectedEdge,
+      connectOverlapping: (): ConnectOverlappingResult => {
+        const raceCourse = selectedEvent?.raceCourses?.[0];
+        const result = connectOverlapping({
+          controls: raceCourse?.controls ?? [],
+          nodes,
+          edges,
+          polygons: raceCourse?.polygons ?? [],
+        });
+        if (result.added + result.removed + result.updated > 0) saveEdgesToEvent(result.edges);
+        return result;
       },
     }));
 
@@ -595,19 +482,7 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
         } else if (selectedEdgeId && (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "r") {
           // Ctrl+R (or Cmd+R on Mac) with edge selected - reverse edge direction
           e.preventDefault();
-          let reversedEdge: Edge | undefined;
-          const updatedEdges = edges.map((edge) => {
-            if (edgeKey(edge) === selectedEdgeId) {
-              reversedEdge = { ...edge, from: edge.to, to: edge.from };
-              return reversedEdge;
-            }
-            return edge;
-          });
-          saveEdgesToEvent(updatedEdges);
-          if (reversedEdge) {
-            setSelectedEdgeId(edgeKey(reversedEdge));
-            if (onPropertiesChange) onPropertiesChange({ type: "edge", ...reversedEdge });
-          }
+          reverseSelectedEdge();
         } else if (selectedEdgeId && !hasModifier && e.key === "1") {
           // "1" key pressed with edge selected - toggle one-way
           const updatedEdges = edges.map((edge) =>
@@ -1103,6 +978,8 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
             top: 0,
             left: 0,
             cursor: cursor,
+            // Draw nodes/controls outside the map area too, so out-of-bounds findings can be seen
+            overflow: "visible",
           }}
           onMouseDown={handleMouseDown(state)}
           onMouseMove={handleMouseMove(state)}
@@ -1296,12 +1173,14 @@ const GraphEditorMapViewer = forwardRef<GraphEditorMapViewerHandle, GraphEditorM
                     </g>
                   )}
                   {/* Edge weight label */}
-                  {showEdgeWeights && !edge.ignoreLength && (() => {
+                  {showEdgeWeights && (edgeLengthOverride(edge) !== undefined || !edge.ignoreLength) && (() => {
                     const mapData = map ?? selectedEvent?.raceCourses?.[0]?.maps?.[0];
                     const mapScale = mapData?.scale ?? 1;
-                    const realDistM = (dist / state.pixelsPerMM) * mapScale * 0.001;
-                    if (realDistM <= 0) return null;
-                    const weightText = realDistM.toFixed(1);
+                    // A hand-set length is shown instead of the calculated one, marked with "*"
+                    const override = edgeLengthOverride(edge);
+                    const realDistM = override ?? (dist / state.pixelsPerMM) * mapScale * 0.001;
+                    if (override === undefined && realDistM <= 0) return null;
+                    const weightText = override !== undefined ? `${override.toFixed(1)}*` : realDistM.toFixed(1);
                     return (
                       <text
                         x={labelX2}

@@ -3,6 +3,7 @@ import type { Control } from "./control";
 import type { Edge, Node } from "./graph";
 import type { MapPosition, MapData } from "./map";
 import { getDocumentDimensions } from "./map";
+import type { DirectionFeature } from "./directions";
 import type { Polygon } from "./polygon";
 import type { CustomRoute } from "./route";
 
@@ -42,6 +43,8 @@ export interface RaceCourseData {
   vertices?: Node[];
   edges?: Edge[];
   polygons?: Polygon[];
+  /** Course direction symbols (uncrossable borders, out of bounds, one-way, crossings). */
+  directions?: DirectionFeature[];
   customRoutes?: CustomRoute[];
 }
 

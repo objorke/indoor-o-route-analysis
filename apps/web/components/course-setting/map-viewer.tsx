@@ -2,15 +2,16 @@
 
 import { useState, useEffect, useRef, forwardRef, useImperativeHandle } from "react";
 import dynamic from "next/dynamic";
-import { useAppData } from "@indoor-o-route-analysis/ui";
-import { ControlRenderer, renderLegConnections } from "@indoor-o-route-analysis/ui";
+import { useAppData, useSettings } from "@indoor-o-route-analysis/ui";
+import { ControlRenderer, renderLegConnections, renderDirections } from "@indoor-o-route-analysis/ui";
 import { getCourseControlLabelMap } from "@indoor-o-route-analysis/core";
 import { type MapViewerState, type MapViewerController, mapToEvent, eventPosToMultiPagePixels } from "@/components/map-viewer";
 import { CONTROL_RADIUS } from "@indoor-o-route-analysis/core";
-import type { Control, RaceCourseData } from "@indoor-o-route-analysis/core";
+import type { Control, RaceCourseData, MapExchangeType } from "@indoor-o-route-analysis/core";
 import type { MapData } from "@indoor-o-route-analysis/core";
-import { getEventTransform } from "@indoor-o-route-analysis/core";
+import { getEventTransform, updateRaceCourse } from "@indoor-o-route-analysis/core";
 
+import { useVisibleDirections } from "@/components/directions/use-visible-directions";
 const MapViewer = dynamic(() => import("@/components/map-viewer"), {
   ssr: false,
   loading: () => <div className="flex-1" />,
@@ -57,7 +58,13 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
     const [didDrag, setDidDrag] = useState(false);
     const [pointerControlId, setPointerControlId] = useState<string | null>(null);
     const [isDraggingControl, setIsDraggingControl] = useState(false);
-    const { selectedEvent, updateEventData, selectedCourseId, pdfBlobUrl } = useAppData();
+    const { selectedEvent, updateEvent, selectedCourseId, pdfBlobUrl } = useAppData();
+    const directions = useVisibleDirections(selectedEvent);
+    /** Apply `fn` to the first race course of the latest event. */
+    const updateLatestRaceCourse = (fn: (rc: RaceCourseData) => RaceCourseData, label?: string) => {
+      if (selectedEvent) void updateEvent(selectedEvent.id, (e) => updateRaceCourse(e, fn), undefined, { label });
+    };
+    const { showControlPoints } = useSettings();
 
     const mapControllerRef = useRef<MapViewerController | null>(null);
     const mapStateRef = useRef<MapViewerState | null>(null);
@@ -111,33 +118,21 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
 
     if (hit) {
       if (autoAddToCourse && selectedCourseId && selectedEvent) {
-        // Auto-add logical
-        const raceCourse = selectedEvent.raceCourses?.[0];
-        if (raceCourse) {
-          const updatedCourses = (raceCourse.courses ?? []).map((c) => {
-            if (c.id === selectedCourseId) {
-              const courseControls = c.controls ?? [];
-              return {
-                ...c,
-                controls: [...courseControls, { controlId: hit.id }],
-              };
-            }
-            return c;
-          });
-          
-          const updatedRaceCourses = selectedEvent.raceCourses?.map((rc, i) => 
-            i === 0 ? { ...rc, courses: updatedCourses } : rc
-          ) || [];
-
-          updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
-        }
+        // Auto-add the clicked control to the current course
+        const courseId = selectedCourseId;
+        updateLatestRaceCourse((rc) => ({
+          ...rc,
+          courses: (rc.courses ?? []).map((c) =>
+            c.id === courseId ? { ...c, controls: [...(c.controls ?? []), { controlId: hit.id }] } : c,
+          ),
+        }), "Add control to course");
       }
       onControlSelected?.(hit.id);
     }
   };
 
   const handleMouseMove =
-    (state: MapViewerState, controlsSnapshot: Control[]) => (e: React.MouseEvent<SVGSVGElement>) => {
+    (state: MapViewerState, _controlsSnapshot: Control[]) => (e: React.MouseEvent<SVGSVGElement>) => {
       if (!pointerDown) return;
       if (pointerControlId) {
         e.preventDefault(); // Prevent browser text selection during control drag
@@ -158,16 +153,13 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
 
           const { x, y } = svgCoordsFromMouse(e, state);
           const { x: xEvent, y: yEvent } = toEvent(state, { x, y });
-          const updatedControls = controlsSnapshot.map((control) =>
-            control.id === pointerControlId
-              ? { ...control, mapPosition: { x: xEvent, y: yEvent } }
-              : control,
-          );
-
-          const updatedRaceCourses =
-            selectedEvent.raceCourses?.map((rc, i) => (i === 0 ? { ...rc, controls: updatedControls } : rc)) || [];
-
-          updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+          const draggedId = pointerControlId;
+          updateLatestRaceCourse((rc) => ({
+            ...rc,
+            controls: (rc.controls ?? []).map((control) =>
+              control.id === draggedId ? { ...control, mapPosition: { x: xEvent, y: yEvent } } : control,
+            ),
+          }), "Move control");
         }
         return;
       }
@@ -242,33 +234,16 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
           extensions: {},
         } as Control); // Cast to ensure it matches strict interface if needed
 
-    const updatedRaceCourses = [...(selectedEvent.raceCourses || [])];
-    if (updatedRaceCourses.length === 0) {
-      updatedRaceCourses.push({ courses: [], maps: [], controls: [newControl] } as RaceCourseData);
-    } else {
-      let nextCourseData = {};
-      
-      if (autoAddToCourse && selectedCourseId) {
-         const updatedCourses = (updatedRaceCourses[0].courses ?? []).map((c) => {
-            if (c.id === selectedCourseId) {
-              const courseControls = c.controls ?? [];
-              return {
-                ...c,
-                controls: [...courseControls, { controlId: newControl.id }],
-              };
-            }
-            return c;
-          });
-          nextCourseData = { courses: updatedCourses };
-      }
-
-      updatedRaceCourses[0] = { 
-        ...updatedRaceCourses[0], 
-        controls: [...controlsMM, newControl],
-        ...nextCourseData
-      };
-    }
-    updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+    const addToCourseId = autoAddToCourse ? selectedCourseId : null;
+    updateLatestRaceCourse((rc) => ({
+      ...rc,
+      controls: [...(rc.controls ?? []), newControl],
+      courses: addToCourseId
+        ? (rc.courses ?? []).map((c) =>
+            c.id === addToCourseId ? { ...c, controls: [...(c.controls ?? []), { controlId: newControl.id }] } : c,
+          )
+        : rc.courses,
+    }), "Add control");
     onControlSelected?.(newControl.id);
     resetInteraction();
   };
@@ -408,8 +383,29 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
                 .map((c) => controlsPx.find((cp) => cp.id === c.id))
                 .filter(Boolean) as typeof controlsPx;
 
+              // Map exchanges (change/flip) in the selected course, keyed by control ID.
+              // The triangle points towards the next control in the course.
+              const courseEntries = currentCourse?.controls ?? [];
+              const mapExchanges = new Map<string, { type: MapExchangeType; next?: { x: number; y: number } }>();
+              courseEntries.forEach((cc, i) => {
+                if (!cc.mapExchange || mapExchanges.has(cc.controlId)) return;
+                const nextId = courseEntries[i + 1]?.controlId;
+                const next = nextId ? controlsPx.find((cp) => cp.id === nextId) : undefined;
+                mapExchanges.set(cc.controlId, { type: cc.mapExchange, next });
+              });
+
               return (
                 <>
+                  {/* Course directions (drawn in the Directions view), below the course */}
+                  <g pointerEvents="none">
+                    {renderDirections({
+                      features: directions,
+                      toPx: (p) => eventPosToMultiPagePixels(p, map, state.pixelsPerMM),
+                      pixelsPerMM: state.pixelsPerMM,
+                      mapScale: map?.scale,
+              idPrefix: "course-setting-op",
+                    })}
+                  </g>
                   {renderLegConnections({ controls: courseControlsPx })}
 
                   {controlsPx.map((control) => {
@@ -427,7 +423,8 @@ const CourseSettingMapViewer = forwardRef<CourseSettingMapViewerHandle, CourseSe
                       strokeColor,
                       maybeGlow,
                       controlLabelMap,
-                      showControlPoint: map?.showControlPoints,
+                      showControlPoint: showControlPoints,
+                      mapExchange: mapExchanges.get(control.id),
                     });
                   })}
                 </>

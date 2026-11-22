@@ -1,6 +1,7 @@
 "use client"
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from "react";
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from "react";
+import type { EventData, RouteEnumerationAlgorithm } from "@indoor-o-route-analysis/core";
 import {
   getAllEvents,
   saveEvent,
@@ -12,10 +13,23 @@ import {
   clearRecentFiles,
   saveEventMetadata,
   getAllEventMetadata,
-  type EventData,
   type RecentFile,
-} from "@indoor-o-route-analysis/core";
+} from "@indoor-o-route-analysis/core/storage";
 import { base64ToArrayBuffer } from "@indoor-o-route-analysis/core";
+import {
+  createHistory,
+  recordChange,
+  undo as undoHistory,
+  redo as redoHistory,
+  canUndo as historyCanUndo,
+  canRedo as historyCanRedo,
+  isSaved as historyIsSaved,
+  markSaved as historyMarkSaved,
+  undoLabel as historyUndoLabel,
+  redoLabel as historyRedoLabel,
+  dropOldestWhile,
+  type HistoryState,
+} from "@indoor-o-route-analysis/core";
 import { SettingsProvider, useSettings } from "./settings-context";
 
 /**
@@ -27,6 +41,31 @@ import { SettingsProvider, useSettings } from "./settings-context";
  */
 export type RecentFileIdentity = FileSystemFileHandle | { name: string; url: string };
 
+export interface UpdateEventOptions {
+  /** Short description for the Undo/Redo tooltips, e.g. "Move control". */
+  label?: string;
+  /** Rapid updates with the same label and groupKey merge into one undo step (default: label only). */
+  groupKey?: string;
+  /** false: don't create an undo step (derived/migration data). Default true. */
+  record?: boolean;
+}
+
+/** What one undo step restores: the event plus the map PDF that belonged to it. */
+interface EventSnapshot {
+  event: EventData;
+  pdf: ArrayBuffer | null;
+  mapId: string | null;
+}
+
+/** At most this many distinct PDF buffers are kept alive by the undo history. */
+const MAX_HISTORY_PDFS = 3;
+
+function distinctHistoryPdfs(h: HistoryState<EventSnapshot>): number {
+  const set = new Set<ArrayBuffer>();
+  for (const e of [...h.past, ...h.future]) if (e.state.pdf) set.add(e.state.pdf);
+  return set.size;
+}
+
 interface AppDataContextType {
   // Events
   events: EventData[];
@@ -37,6 +76,27 @@ interface AppDataContextType {
   setSelectedEventId: (id: string | null) => void;
   addEvent: (event: EventData, pdfData?: ArrayBuffer, persistImmediate?: boolean) => Promise<void>;
   updateEventData: (id: string, updates: Partial<EventData>, pdfData?: ArrayBuffer) => Promise<void>;
+  /**
+   * Functional update: `updater` receives the latest event (not a render-time
+   * copy), so concurrent or async edits don't overwrite each other. Prefer this
+   * over `updateEventData` for anything that rebuilds `raceCourses`; see the
+   * pure helpers in core `event-updates.ts`. `updater` must be pure.
+   */
+  updateEvent: (
+    id: string,
+    updater: (prev: EventData) => EventData,
+    pdfData?: ArrayBuffer,
+    options?: UpdateEventOptions,
+  ) => Promise<void>;
+
+  // Undo/redo of edits to the selected event (in memory; reset when another event is opened)
+  undo: () => void;
+  redo: () => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  /** Label of the change Undo would revert ("" when unlabelled, undefined when nothing to undo). */
+  undoLabel: string | undefined;
+  redoLabel: string | undefined;
   removeEvent: (id: string) => Promise<void>;
   refreshEvents: () => Promise<void>;
 
@@ -79,6 +139,10 @@ interface AppDataContextType {
   routeAnalysisK: number;
   setRouteAnalysisK: (value: number) => void;
 
+  // "Show all routes" enumeration algorithm (owned by SettingsContext)
+  routeEnumerationAlgorithm: RouteEnumerationAlgorithm;
+  setRouteEnumerationAlgorithm: (value: RouteEnumerationAlgorithm) => void;
+
   // File System Access
   fileHandle: FileSystemFileHandle | null;
   setFileHandle: (handle: FileSystemFileHandle | null) => void;
@@ -112,8 +176,16 @@ export function AppDataProvider({ children }: { children: React.ReactNode }) {
 }
 
 function AppDataProviderInner({ children }: { children: React.ReactNode }) {
-  const { persistToDB, setPersistToDB, runningSpeed, setRunningSpeed, routeAnalysisK, setRouteAnalysisK } =
-    useSettings();
+  const {
+    persistToDB,
+    setPersistToDB,
+    runningSpeed,
+    setRunningSpeed,
+    routeAnalysisK,
+    setRouteAnalysisK,
+    routeEnumerationAlgorithm,
+    setRouteEnumerationAlgorithm,
+  } = useSettings();
 
   // Events state
   const [events, setEvents] = useState<EventData[]>([]);
@@ -140,9 +212,51 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   // persistToDB/runningSpeed/routeAnalysisK now live in SettingsContext (see useSettings() above)
 
-  const markAsSaved = useCallback(() => {
-    setUnsavedChanges(false);
+  // --- Undo/redo history (planning/10-undo-redo.md) ---
+  // Synchronous mirrors of state, so updates/undo always start from the latest values
+  const eventsRef = useRef<EventData[]>([]);
+  const selectedEventIdRef = useRef<string | null>(null);
+  const pdfRef = useRef<ArrayBuffer | null>(null);
+  const mapIdRef = useRef<string | null>(null);
+  const unsavedRef = useRef(false);
+  const historyRef = useRef<HistoryState<EventSnapshot>>(createHistory());
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const setHistory = useCallback((h: HistoryState<EventSnapshot>) => {
+    historyRef.current = h;
+    setHistoryVersion((v) => v + 1);
   }, []);
+  useEffect(() => {
+    pdfRef.current = currentPdfData;
+    mapIdRef.current = currentMapId;
+  }, [currentPdfData, currentMapId]);
+  useEffect(() => {
+    unsavedRef.current = unsavedChanges;
+  }, [unsavedChanges]);
+
+  /** All writes to `events` go through here so `eventsRef` is never stale. */
+  const commitEvents = useCallback((next: EventData[]) => {
+    eventsRef.current = next;
+    setEvents(next);
+  }, []);
+  const setPdf = useCallback((pdf: ArrayBuffer | null, mapId: string | null | undefined) => {
+    pdfRef.current = pdf;
+    setCurrentPdfData(pdf);
+    if (mapId !== undefined) {
+      mapIdRef.current = mapId;
+      setCurrentMapId(mapId);
+    }
+  }, []);
+  /** Start a fresh history; the current state counts as saved unless it has unsaved changes. */
+  const resetHistory = useCallback(() => {
+    const h = createHistory<EventSnapshot>();
+    setHistory(unsavedRef.current ? { ...h, savedIndex: null } : h);
+  }, [setHistory]);
+
+  const markAsSaved = useCallback(() => {
+    unsavedRef.current = false;
+    setUnsavedChanges(false);
+    setHistory(historyMarkSaved(historyRef.current));
+  }, [setHistory]);
 
   //
   // Load recent files on mount
@@ -308,7 +422,7 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
         getAllEvents(),
         getAllEventMetadata()
       ]);
-      setEvents(loadedEvents);
+      commitEvents(loadedEvents);
       
       const filenameMap: Record<string, string> = {};
       loadedMetadata.forEach(m => {
@@ -336,7 +450,7 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
     } finally {
       setIsLoadingEvents(false);
     }
-  }, []);
+  }, [commitEvents]);
 
   // Initial load
   useEffect(() => {
@@ -354,6 +468,7 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
       }
 
       setSelectedEventIdState(id);
+      selectedEventIdRef.current = id;
       if (id) {
         localStorage.setItem(STORAGE_KEYS.SELECTED_EVENT, id);
       } else {
@@ -382,10 +497,7 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
       }
 
       // Add to memory, replacing any existing event with the same ID
-      setEvents((prev) => {
-        const others = prev.filter((e) => e.id !== event.id);
-        return [...others, event];
-      });
+      commitEvents([...eventsRef.current.filter((e) => e.id !== event.id), event]);
       // If pdfData is provided, set it to state immediately
       if (pdfData) {
         setCurrentPdfData(pdfData);
@@ -396,40 +508,99 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
       }
       setSelectedEventId(event.id);
 
-      if (persistImmediate) {
-        setUnsavedChanges(false);
-      } else {
-        setUnsavedChanges(true);
-      }
+      unsavedRef.current = !persistImmediate;
+      setUnsavedChanges(!persistImmediate);
+      // A newly opened/created event starts with an empty history
+      resetHistory();
     },
-    [setSelectedEventId, persistToDB],
+    [setSelectedEventId, persistToDB, commitEvents, resetHistory],
   );
 
-  const updateEventData = useCallback(async (id: string, updates: Partial<EventData>, pdfData?: ArrayBuffer) => {
-    // Update in memory only
-    setEvents((prev) => prev.map((e) => (e.id === id ? { ...e, ...updates } : e)));
-    if (pdfData !== undefined) {
-      setCurrentPdfData(pdfData);
+  const updateEvent = useCallback(
+    async (id: string, updater: (prev: EventData) => EventData, pdfData?: ArrayBuffer, options?: UpdateEventOptions) => {
+      // In memory only. Runs the updater exactly once, against the latest event.
+      const list = eventsRef.current;
+      const prev = list.find((e) => e.id === id);
+      if (!prev) return;
+      const next = updater(prev);
+      if (next === prev && pdfData === undefined) return;
 
-      // Try to determine if map ID changed
-      if (updates.raceCourses && updates.raceCourses.length > 0) {
-        const mapId = updates.raceCourses[0].maps?.[0]?.id;
-        if (mapId) setCurrentMapId(mapId);
+      if (options?.record !== false && id === selectedEventIdRef.current) {
+        let h = recordChange(
+          historyRef.current,
+          { event: prev, pdf: pdfRef.current, mapId: mapIdRef.current },
+          { label: options?.label, groupKey: options?.groupKey },
+        );
+        h = dropOldestWhile(h, (x) => distinctHistoryPdfs(x) > MAX_HISTORY_PDFS);
+        setHistory(h);
       }
+
+      commitEvents(list.map((e) => (e.id === id ? next : e)));
+      if (pdfData !== undefined) {
+        // Track the map the new PDF belongs to
+        setPdf(pdfData, getEventMapId(next) ?? undefined);
+      }
+      unsavedRef.current = true;
+      setUnsavedChanges(true);
+    },
+    [commitEvents, setHistory, setPdf],
+  );
+
+  /** Move one step back or forward in the selected event's history. */
+  const stepHistory = useCallback(
+    (direction: "undo" | "redo") => {
+      const id = selectedEventIdRef.current;
+      const present = id ? eventsRef.current.find((e) => e.id === id) : undefined;
+      if (!id || !present) return;
+      const step = direction === "undo" ? undoHistory : redoHistory;
+      const result = step(historyRef.current, { event: present, pdf: pdfRef.current, mapId: mapIdRef.current });
+      if (!result) return;
+      setHistory(result.history);
+      commitEvents(eventsRef.current.map((e) => (e.id === id ? result.state.event : e)));
+      if (result.state.pdf !== pdfRef.current || result.state.mapId !== mapIdRef.current) {
+        setPdf(result.state.pdf, result.state.mapId);
+      }
+      const dirty = !historyIsSaved(result.history);
+      unsavedRef.current = dirty;
+      setUnsavedChanges(dirty);
+    },
+    [commitEvents, setHistory, setPdf],
+  );
+  const undo = useCallback(() => stepHistory("undo"), [stepHistory]);
+  const redo = useCallback(() => stepHistory("redo"), [stepHistory]);
+
+  // New history whenever another event is selected (including first load)
+  useEffect(() => {
+    selectedEventIdRef.current = selectedEventId;
+    resetHistory();
+  }, [selectedEventId, resetHistory]);
+
+  // A selected control that no longer exists (e.g. after undo) is deselected
+  useEffect(() => {
+    if (!selectedControlId || !selectedEvent) return;
+    const exists = selectedEvent.raceCourses?.[0]?.controls?.some((c) => c.id === selectedControlId);
+    if (!exists) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- clearing a dangling selection after undo/delete
+      setSelectedControlIdState(null);
     }
-    setUnsavedChanges(true);
-  }, []);
+  }, [selectedEvent, selectedControlId]);
+
+  const updateEventData = useCallback(
+    (id: string, updates: Partial<EventData>, pdfData?: ArrayBuffer) =>
+      updateEvent(id, (e) => ({ ...e, ...updates }), pdfData),
+    [updateEvent],
+  );
 
   const saveCurrentEvent = useCallback(async () => {
     if (selectedEvent) {
       if (persistToDB) {
         await saveEvent(selectedEvent, currentPdfData || undefined);
-        setUnsavedChanges(false);
+        markAsSaved();
       } else {
         console.warn("Persistence is disabled, not saving to IndexedDB.");
       }
     }
-  }, [selectedEvent, currentPdfData, persistToDB]);
+  }, [selectedEvent, currentPdfData, persistToDB, markAsSaved]);
 
   useEffect(() => {
     const handleBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -442,10 +613,12 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [unsavedChanges]);
   const discardChanges = useCallback(async () => {
+    unsavedRef.current = false;
     setUnsavedChanges(false);
+    setHistory(createHistory());
     // Reload from DB - this resets events and also triggers effect to reload pdfData
     await refreshEvents();
-  }, [refreshEvents]);
+  }, [refreshEvents, setHistory]);
 
   const setEventFilename = useCallback(async (id: string, filename: string) => {
     setEventFilenames(prev => ({ ...prev, [id]: filename }));
@@ -481,7 +654,15 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
     setSelectedEventId,
     addEvent,
     updateEventData,
+    updateEvent,
     removeEvent,
+
+    undo,
+    redo,
+    canUndo: historyVersion >= 0 && historyCanUndo(historyRef.current),
+    canRedo: historyVersion >= 0 && historyCanRedo(historyRef.current),
+    undoLabel: historyCanUndo(historyRef.current) ? (historyUndoLabel(historyRef.current) ?? "") : undefined,
+    redoLabel: historyCanRedo(historyRef.current) ? (historyRedoLabel(historyRef.current) ?? "") : undefined,
     refreshEvents,
 
     recentFiles,
@@ -518,6 +699,9 @@ function AppDataProviderInner({ children }: { children: React.ReactNode }) {
 
     routeAnalysisK,
     setRouteAnalysisK,
+
+    routeEnumerationAlgorithm,
+    setRouteEnumerationAlgorithm,
 
     fileHandle,
     setFileHandle,

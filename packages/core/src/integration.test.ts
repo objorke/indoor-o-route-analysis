@@ -5,11 +5,12 @@ import { RouteAnalyzer } from './route-analyzer';
 import { parseEventFromJSON } from './io/json-io';
 import { ScoringModelRegistry } from './scoring-models';
 import { analyzeCourseLegs } from './course-analysis';
+import { createEventRouteAnalyzer } from './event-route-analyzer';
 
 describe('Integration Tests - Stockholm Indoor Cup E1', () => {
   it('should import Stockholm Indoor Cup E1 example and verify leg 2-3 difficulty score', () => {
     // Load the example file
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2025-02-01-Stockholm-Indoor-Cup-E1.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2025-02-01-Stockholm-Indoor-Cup-E1.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
     
     // Parse the event
@@ -82,7 +83,7 @@ describe('Integration Tests - Stockholm Indoor Cup E1', () => {
 
   it('should verify Stockholm Indoor Cup E1 has expected structure', () => {
     // Load the example file
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2025-02-01-Stockholm-Indoor-Cup-E1.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2025-02-01-Stockholm-Indoor-Cup-E1.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
     
     // Parse the event
@@ -107,7 +108,7 @@ describe('Integration Tests - Stockholm Indoor Cup E1', () => {
 
   it('should calculate difficulty for multiple legs in Stockholm Indoor Cup E1', () => {
     // Load the example file
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2025-02-01-Stockholm-Indoor-Cup-E1.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2025-02-01-Stockholm-Indoor-Cup-E1.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
     
     // Parse the event
@@ -165,7 +166,7 @@ describe('Integration Tests - Stockholm Indoor Cup E1', () => {
 describe('Integration Tests - Stockholm Indoor Cup 2026 E1', () => {
   it('should find all routes from control 71 to 59 in Bana 1, including route "abcccCAddEEEEe"', () => {
     // Load the 2026 example file
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2026-02-07-Stockholm-Indoor-Cup-E1.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2026-02-07-Stockholm-Indoor-Cup-E1.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
 
     // Parse the event
@@ -216,7 +217,7 @@ describe('Integration Tests - Stockholm Indoor Cup 2026 E1', () => {
 
 describe('Integration Tests - Porsgrunn inne-o', () => {
   it('should find all routes from control 109 to 116 (leg 7-8) without hanging', () => {
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2026-01-24-Porsgrunn-inne-o.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2026-01-24-Porsgrunn-inne-o.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
     const event = parseEventFromJSON(jsonContent);
     const raceCourse = event.raceCourses![0];
@@ -257,7 +258,7 @@ describe('Integration Tests - Porsgrunn inne-o', () => {
   }, 30_000);
 
   it('should analyze all courses with findAllRoutes=true without hanging', () => {
-    const examplePath = join(__dirname, '../../../apps/web/public/examples/2026-01-24-Porsgrunn-inne-o.json');
+    const examplePath = join(__dirname, '../../../test-data/events/2026-01-24-Porsgrunn-inne-o.json');
     const jsonContent = readFileSync(examplePath, 'utf-8');
     const event = parseEventFromJSON(jsonContent);
     const raceCourse = event.raceCourses![0];
@@ -291,7 +292,7 @@ describe('Integration Tests - Porsgrunn inne-o', () => {
 
 describe('Route enumeration completeness (best-first)', () => {
   function loadAnalyzer(file: string) {
-    const examplePath = join(__dirname, `../../../apps/web/public/examples/${file}`);
+    const examplePath = join(__dirname, `../../../test-data/events/${file}`);
     const event = parseEventFromJSON(readFileSync(examplePath, 'utf-8'));
     const raceCourse = event.raceCourses![0];
     const mapScale = raceCourse.maps?.[0]?.scale || 800;
@@ -354,5 +355,44 @@ describe('Route enumeration completeness (best-first)', () => {
     const elapsed = Date.now() - start;
     expect(routes.length).toBeGreaterThanOrEqual(50);
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+describe('Integration Tests - human route simulation on real events', () => {
+  // Regression: legs that need an unlabeled one-way passage used to have no
+  // human plan at all (12 % of all example legs).
+  it.each([
+    '2023-02-05-Stockholm-Indoor-Cup-E2.json',
+    '2025-02-01-Stockholm-Indoor-Cup-E1.json',
+  ])('plans every course leg that has a route in %s', (file) => {
+    const event = parseEventFromJSON(readFileSync(join(__dirname, '../../../test-data/events', file), 'utf-8'));
+    const raceCourse = event.raceCourses![0];
+    const analyzer = createEventRouteAnalyzer(event);
+    const controls = new Map(raceCourse.controls.map((c) => [c.id, c]));
+
+    let legs = 0;
+    const unplanned: string[] = [];
+    let worstGap = 1;
+    for (const course of raceCourse.courses ?? []) {
+      for (let i = 0; i + 1 < course.controls.length; i++) {
+        const from = controls.get(course.controls[i].controlId);
+        const to = controls.get(course.controls[i + 1].controlId);
+        if (!from || !to) continue;
+        const shortest = analyzer.findShortestPathBetweenControls(from, to);
+        if (!shortest || !(shortest.distance > 0)) continue;
+        legs++;
+        const human = analyzer.findHumanRouteWithTrace(from.id, to.id);
+        if (!human) {
+          unplanned.push(`${from.id}-${to.id}`);
+          continue;
+        }
+        worstGap = Math.max(worstGap, human.route.distance / shortest.distance);
+      }
+    }
+
+    expect(legs).toBeGreaterThan(20);
+    expect(unplanned).toEqual([]);
+    // A plan is never shorter than the shortest route, and stays within reach of it.
+    expect(worstGap).toBeLessThan(6);
   });
 });

@@ -15,13 +15,13 @@
   },
   "dependencies": {
     "@indoor-o-route-analysis/core": "workspace:*",
-    "@napi-rs/canvas": "^1.0.2",
-    "linkedom": "^0.18.9"
+    "@napi-rs/canvas": "^1.1.1",
+    "linkedom": "^0.18.15"
   },
   "devDependencies": {
-    "@types/node": "^22",
-    "tsx": "^4.19.2",
-    "typescript": "^5",
-    "vitest": "^4.1.11"
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
   }
 }

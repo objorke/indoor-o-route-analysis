@@ -16,22 +16,42 @@ import {
   LineDotRightHorizontal,
   Link,
   Ruler,
+  ArrowLeftRight,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
-import { renameAllNodes } from "@indoor-o-route-analysis/core";
+import { renameAllNodes, mergeRaceCourse, updateRaceCourse, edgeLengthOverride, type ConnectOverlappingResult } from "@indoor-o-route-analysis/core";
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import { getPageIndexForEventPos } from "@/components/map-viewer";
 import { MapVisibilityToggle } from "@/components/map-visibility-toggle";
 import GraphEditorInfoDialog from "./info-dialog";
 import type { GraphFinding } from "./map-viewer";
 import { Button } from "@indoor-o-route-analysis/ui";
-import { Input } from "@indoor-o-route-analysis/ui";
+import { Input, NumericInput } from "@indoor-o-route-analysis/ui";
 import { Label } from "@indoor-o-route-analysis/ui";
 import { Checkbox } from "@indoor-o-route-analysis/ui";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@indoor-o-route-analysis/ui";
 import { openJsonFilePicker } from "@/lib/file-picker";
 
 import type { SelectedProperties } from "./map-viewer";
+import { notify, confirmAction } from "@indoor-o-route-analysis/ui";
 
+
+import { FieldHelp } from "@/components/field-help";
+
+/** localStorage key for the Graph Statistics expanded state. */
+const STATS_EXPANDED_STORAGE_KEY = "graph-stats-expanded";
+/** Toast text after "Connect overlapping". */
+function connectOverlappingSummary(r: ConnectOverlappingResult): string {
+  if (r.added + r.removed + r.updated === 0) return "Overlapping controls/nodes are already joined by exactly one zero-length edge.";
+  const parts = [
+    r.added > 0 ? `added ${r.added}` : "",
+    r.removed > 0 ? `removed ${r.removed} extra` : "",
+    r.updated > 0 ? `made ${r.updated} zero-length` : "",
+  ].filter(Boolean);
+  const text = parts.join(", ");
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)} edge(s) between overlapping controls/nodes.`;
+}
 interface GraphEditorPropertiesPanelProps {
   properties?: SelectedProperties;
   onPropertiesChange?: (properties: SelectedProperties | null) => void;
@@ -49,11 +69,16 @@ interface GraphEditorPropertiesPanelProps {
   showEdgeWeights: boolean;
   onShowEdgeWeightsChange: (show: boolean) => void;
   onVerifyGraph: () => void;
+  /** The validation panel is shown (Verify graph toggles it). */
+  isVerifyPanelOpen?: boolean;
   findings: GraphFinding[] | null;
   onSelectFinding: (finding: GraphFinding) => void;
   onDeleteFinding: (finding: GraphFinding) => void;
   onClearGraph: () => void;
-  onConnectOverlappingControls: () => number;
+  /** Exactly one zero-length edge between each pair of overlapping controls/nodes; null without a graph view. */
+  onConnectOverlapping: () => ConnectOverlappingResult | null;
+  /** Reverse the direction of the selected edge (same as Ctrl/Cmd+R); false without a selected edge. */
+  onReverseSelectedEdge: () => boolean;
 }
 
 export default function GraphEditorPropertiesPanel({
@@ -72,13 +97,31 @@ export default function GraphEditorPropertiesPanel({
   showEdgeWeights,
   onShowEdgeWeightsChange,
   onVerifyGraph,
+  isVerifyPanelOpen = false,
   findings = null,
   onSelectFinding,
   onDeleteFinding,
   onClearGraph,
-  onConnectOverlappingControls,
+  onConnectOverlapping,
+  onReverseSelectedEdge,
 }: GraphEditorPropertiesPanelProps) {
-  const { selectedEvent, updateEventData } = useAppData();
+  // Graph Statistics expanded/collapsed: a per-browser convenience, remembered in localStorage
+  const [statsExpanded, setStatsExpandedState] = useState<boolean>(() => {
+    try {
+      return typeof window === "undefined" || localStorage.getItem(STATS_EXPANDED_STORAGE_KEY) !== "false";
+    } catch {
+      return true;
+    }
+  });
+  const setStatsExpanded = (expanded: boolean) => {
+    setStatsExpandedState(expanded);
+    try {
+      localStorage.setItem(STATS_EXPANDED_STORAGE_KEY, String(expanded));
+    } catch {
+      // storage unavailable: keep the in-memory value
+    }
+  };
+  const { selectedEvent, updateEvent } = useAppData();
   const isEdgeProperties =
     properties?.type === "edge" && typeof properties?.from === "string" && typeof properties?.to === "string";
   const isNodeProperties = properties?.type === "node";
@@ -196,7 +239,7 @@ export default function GraphEditorPropertiesPanel({
     );
   }, [selectedEvent]);
 
-  const handleRenameAllNodes = useCallback(() => {
+  const handleRenameAllNodes = useCallback(async () => {
     if (!selectedEvent) return;
     const raceCourse = selectedEvent.raceCourses?.[0];
     if (!raceCourse) return;
@@ -205,14 +248,16 @@ export default function GraphEditorPropertiesPanel({
     const edgeCount = (raceCourse.edges ?? []).length;
     if (vertexCount === 0 && edgeCount === 0) return;
 
-    if (!confirm(`Rename all ${vertexCount} nodes starting from ID 1000? This cannot be undone.`)) return;
+    const ok = await confirmAction(`Rename all ${vertexCount} nodes starting from ID 1000? You can undo this with Ctrl/Cmd+Z.`, {
+      title: "Renumber nodes",
+      confirmLabel: "Renumber",
+    });
+    if (!ok) return;
 
-    const { vertices, edges, customRoutes } = renameAllNodes(raceCourse);
-
-    const updatedRaceCourses = [...(selectedEvent.raceCourses || [])];
-    updatedRaceCourses[0] = { ...raceCourse, vertices, edges, customRoutes };
-    updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
-  }, [selectedEvent, updateEventData]);
+    updateEvent(selectedEvent.id, (e) => updateRaceCourse(e, (rc) => ({ ...rc, ...renameAllNodes(rc) })), undefined, {
+      label: "Renumber nodes",
+    });
+  }, [selectedEvent, updateEvent]);
 
   const importGraphJSON = useCallback(async () => {
     if (!selectedEvent) return;
@@ -231,7 +276,7 @@ export default function GraphEditorPropertiesPanel({
           !graphData.edges ||
           !Array.isArray(graphData.edges)
         ) {
-          alert("Invalid graph JSON format. Expected 'nodes' and 'edges' arrays.");
+          notify("Invalid graph JSON format. Expected 'nodes' and 'edges' arrays.", { kind: "error" });
           return;
         }
 
@@ -248,33 +293,24 @@ export default function GraphEditorPropertiesPanel({
 
         const currentRaceCourses = selectedEvent.raceCourses || [];
         if (currentRaceCourses.length === 0) {
-          alert("No race course found to import graph into.");
+          notify("No race course found to import graph into.");
           return;
         }
 
-        const raceCourseIndex = 0; // Default targeting first raceCourse as per export
-        const raceCourse = currentRaceCourses[raceCourseIndex];
-
-        const updatedRaceCourse = {
-          ...raceCourse,
-          vertices: importedVertices,
-          edges: importedEdges,
-        };
-
-        const updatedRaceCourses = [...currentRaceCourses];
-        updatedRaceCourses[raceCourseIndex] = updatedRaceCourse;
-
-        await updateEventData(selectedEvent.id, {
-          raceCourses: updatedRaceCourses,
-        });
+        // Imports into the first race course, as exported
+        await updateEvent(selectedEvent.id, (e) =>
+          mergeRaceCourse(e, { vertices: importedVertices, edges: importedEdges }),
+          undefined,
+          { label: "Import graph" },
+        );
       }
     } catch (err: unknown) {
       if (err instanceof Error && err.name !== "AbortError") {
         console.error("Failed to import graph:", err);
-        alert("Failed to import graph.");
+        notify("Failed to import graph.", { kind: "error" });
       }
     }
-  }, [selectedEvent, updateEventData]);
+  }, [selectedEvent, updateEvent]);
 
   const stats = useMemo(() => {
     if (!selectedEvent) return null;
@@ -384,11 +420,22 @@ export default function GraphEditorPropertiesPanel({
         <TooltipProvider>
           <Tooltip>
             <TooltipTrigger asChild>
-              <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onVerifyGraph}>
+              <Button
+                variant={isVerifyPanelOpen ? "active" : "ghost"}
+                size="icon"
+                className="h-7 w-7"
+                onClick={onVerifyGraph}
+                aria-label="Verify graph"
+                aria-pressed={isVerifyPanelOpen}
+              >
                 <CheckCircle className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Verify the graph for errors such as disconnected nodes or invalid edges.</TooltipContent>
+            <TooltipContent>
+              {isVerifyPanelOpen
+                ? "Hide the validation findings"
+                : "Verify the graph for errors such as disconnected nodes, invalid edges or items outside the map, and show the findings"}
+            </TooltipContent>
           </Tooltip>
         </TooltipProvider>
         <TooltipProvider>
@@ -444,7 +491,7 @@ export default function GraphEditorPropertiesPanel({
                 <Info className="h-4 w-4" />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Open the information guide for graph editor features.</TooltipContent>
+            <TooltipContent>Open the information guide for Graph view features.</TooltipContent>
           </Tooltip>
         </TooltipProvider>
         {/* Hamburger menu for export */}
@@ -511,22 +558,39 @@ export default function GraphEditorPropertiesPanel({
                 Rename All Nodes
               </button>
               <button
+                type="button"
+                disabled={properties?.type !== "edge"}
                 onClick={() => {
-                  const count = onConnectOverlappingControls();
-                  alert(count > 0 ? `Added ${count} edge(s) between overlapping controls.` : "No overlapping controls found.");
+                  onReverseSelectedEdge();
+                  setShowExportMenu(false);
+                }}
+                title={properties?.type === "edge" ? "Swap the start and end of the selected edge (Ctrl/Cmd+R)" : "Select an edge first"}
+                className="flex w-full items-center px-2 py-2 text-xs hover:bg-accent hover:text-accent-foreground rounded-sm disabled:opacity-50 disabled:pointer-events-none"
+              >
+                <ArrowLeftRight className="mr-2 h-3 w-3" />
+                Reverse selected edge
+                <span className="ml-auto pl-2 text-muted-foreground">Ctrl+R</span>
+              </button>
+              <button
+                onClick={() => {
+                  const r = onConnectOverlapping();
+                  if (r) notify(connectOverlappingSummary(r));
                   setShowExportMenu(false);
                 }}
                 className="flex w-full items-center px-2 py-2 text-xs hover:bg-accent hover:text-accent-foreground rounded-sm"
               >
                 <Link className="mr-2 h-3 w-3" />
-                Connect Overlapping Controls
+                Connect overlapping
               </button>
               <button
-                onClick={() => {
-                  if (confirm("Are you sure you want to clear all nodes and edges? This cannot be undone.")) {
-                    onClearGraph();
-                  }
+                onClick={async () => {
                   setShowExportMenu(false);
+                  const ok = await confirmAction("Clear all nodes and edges? You can undo this with Ctrl/Cmd+Z.", {
+                    title: "Clear graph",
+                    confirmLabel: "Clear",
+                    destructive: true,
+                  });
+                  if (ok) onClearGraph();
                 }}
                 className="flex w-full items-center px-2 py-2 text-xs hover:bg-destructive hover:text-destructive-foreground text-destructive rounded-sm"
               >
@@ -708,22 +772,77 @@ export default function GraphEditorPropertiesPanel({
                 className="border-primary/40 checked:bg-primary checked:border-primary h-5 w-5"
               />
               <Label htmlFor="edge-map-segment-transition" className="text-xs text-muted-foreground cursor-pointer">
-                {"Ignore Length (map-segment transition)"}
+                {"Ignore Length"}
               </Label>
+              <FieldHelp label="About Ignore Length">
+                The edge counts as 0 m in route lengths, and is drawn dashed. Use it where the distance on the map
+                doesn&apos;t match the distance run, typically a map-segment transition: a stair between two floors
+                drawn in different places on the map, e.g. from stair A on floor 1 (left page) to stair A on floor 2
+                (right page). Also for joining two overlapping controls/nodes.
+              </FieldHelp>
+            </div>
+
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <Checkbox
+                  id="edge-length-override"
+                  checked={edgeLengthOverride(properties) !== undefined}
+                  onCheckedChange={(checked) =>
+                    handleUpdate({
+                      // Start from the calculated length, rounded to 0.1 m
+                      length: checked
+                        ? Math.round((properties.ignoreLength ? 0 : properties.edgeLength || 0) * 10) / 10
+                        : undefined,
+                    })
+                  }
+                  className="border-primary/40 checked:bg-primary checked:border-primary h-5 w-5"
+                />
+                <Label htmlFor="edge-length-override" className="text-xs text-muted-foreground cursor-pointer">
+                  {"Set length manually"}
+                </Label>
+                <FieldHelp label="About Set length manually">
+                  Enter the real length in metres; it is used instead of the length calculated from the map (and
+                  instead of Ignore Length) in all route lengths and analysis. E.g. a stair between floors is 8 m to
+                  run but drawn as a jump between pages, or a corridor detour that is drawn as a straight line. Untick
+                  to go back to the calculated length.
+                </FieldHelp>
+              </div>
+              {edgeLengthOverride(properties) !== undefined && (
+                <div className="flex items-center gap-2">
+                  <NumericInput
+                    id="edge-length-value"
+                    aria-label="Edge length (m)"
+                    className="h-8 w-28"
+                    min={0}
+                    decimals={1}
+                    value={edgeLengthOverride(properties) ?? 0}
+                    onCommit={(v) => handleUpdate({ length: v })}
+                  />
+                  <span className="text-xs text-muted-foreground">m</span>
+                </div>
+              )}
             </div>
 
             <div>
               <Label htmlFor="edge-length" className="text-xs text-muted-foreground">
-                {"Edge Length"}
+                {"Actual Length"}
               </Label>
               <Input
                 id="edge-length"
                 type="text"
                 disabled
-                value={properties.ignoreLength ? "0 m" : `${(properties.edgeLength || 0).toFixed(1)} m`}
+                // The length used by the route analysis: the hand-set length, else the calculated one
+                value={
+                  edgeLengthOverride(properties) !== undefined
+                    ? `${(edgeLengthOverride(properties) ?? 0).toFixed(1)} m (set manually)`
+                    : properties.ignoreLength
+                      ? "0 m"
+                      : `${(properties.edgeLength || 0).toFixed(1)} m`
+                }
                 className="mt-1"
               />
             </div>
+
           </div>
         )}
 
@@ -808,7 +927,17 @@ export default function GraphEditorPropertiesPanel({
 
       {stats && (
         <div className="border-t border-border p-4 bg-muted/20 text-xs space-y-2">
-          <h3 className="font-semibold text-foreground mb-2">Graph Statistics</h3>
+          <button
+            type="button"
+            className="flex w-full items-center gap-1 text-left font-semibold text-foreground"
+            onClick={() => setStatsExpanded(!statsExpanded)}
+            aria-expanded={statsExpanded}
+            title={statsExpanded ? "Collapse graph statistics" : "Expand graph statistics"}
+          >
+            {statsExpanded ? <ChevronDown className="h-3.5 w-3.5" /> : <ChevronRight className="h-3.5 w-3.5" />}
+            <h3>Graph Statistics</h3>
+          </button>
+          {statsExpanded && (
           <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-muted-foreground">
             <span title="Number of nodes and controls in the graph">Graph order:</span>
             <span className="text-foreground text-right">{stats.nodeCount+stats.controlCount}</span>
@@ -833,6 +962,7 @@ export default function GraphEditorPropertiesPanel({
               {stats.totalLength.toFixed(0)} m
             </span>
           </div>
+          )}
         </div>
       )}
 

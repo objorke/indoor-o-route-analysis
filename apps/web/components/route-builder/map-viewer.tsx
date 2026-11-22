@@ -5,8 +5,9 @@ import MapViewer, { type MapViewerState, type MapViewerController, eventPosToMul
 import type { Node, Edge, Control } from "@indoor-o-route-analysis/core";
 import { edgeKey } from "@indoor-o-route-analysis/core";
 import type { MapData } from "@indoor-o-route-analysis/core";
-import { ControlRenderer, buildRoutePathSegments } from "@indoor-o-route-analysis/ui";
-import { useAppData } from "@indoor-o-route-analysis/ui";
+import { ControlRenderer, buildRoutePathSegments, renderDirections } from "@indoor-o-route-analysis/ui";
+
+import { useAppData, useSettings } from "@indoor-o-route-analysis/ui";
 import { VideoExporter, type VideoExportContext } from "@indoor-o-route-analysis/core/export";
 import type { VideoExportSettings } from "@/components/shared/video-export-dialog";
 import {
@@ -20,6 +21,7 @@ import {
   PRIMARY_ROUTE_COLOR,
 } from "@indoor-o-route-analysis/core";
 
+import { useVisibleDirections } from "@/components/directions/use-visible-directions";
 interface RouteBuilderMapViewerProps {
   map: MapData;
   nodes: Node[];
@@ -82,7 +84,9 @@ const RouteBuilderMapViewer = forwardRef<RouteBuilderMapViewerHandle, RouteBuild
   onPlaybackComplete,
   timingSchedule,
 }, ref) => {
-  const { runningSpeed: contextRunningSpeed } = useAppData();
+  const { runningSpeed: contextRunningSpeed, selectedEvent } = useAppData();
+  const directions = useVisibleDirections(selectedEvent);
+  const { showControlPoints } = useSettings();
   const effectiveRunningSpeed = contextRunningSpeed > 0 ? contextRunningSpeed : 3;
 
   const EDGE_COLOR = GRAPH_EDGE_COLOR;
@@ -615,6 +619,17 @@ const RouteBuilderMapViewer = forwardRef<RouteBuilderMapViewerHandle, RouteBuild
             <rect x={0} y={0} width={state.pdfDimensions.width} height={state.pdfDimensions.height} fill="white" />
           )}
 
+          {/* Course directions (Directions view) */}
+          <g pointerEvents="none">
+            {renderDirections({
+              features: directions,
+              toPx: (p) => eventPosToMultiPagePixels(p, map, state.pixelsPerMM),
+              pixelsPerMM: state.pixelsPerMM,
+              mapScale: map?.scale,
+              idPrefix: "route-builder-op",
+            })}
+          </g>
+
           {/* Edges - skip edges marked ignoreLength */}
           {showGraph && edges.map((edge) => {
             // Skip edges marked ignoreLength (stairs)
@@ -750,7 +765,7 @@ const RouteBuilderMapViewer = forwardRef<RouteBuilderMapViewerHandle, RouteBuild
                 maybeGlow: "drop-shadow(0 0 2px white)",
                 showLabel: true,
                 label,
-                showControlPoint: map.showControlPoints,
+                showControlPoint: showControlPoints,
               });
               
               // If this control is also a waypoint (timing point), show the number
@@ -812,8 +827,8 @@ const RouteBuilderMapViewer = forwardRef<RouteBuilderMapViewerHandle, RouteBuild
       );
     },
     [edges, waypointNodes, fromControlId, toControlId, selectedLegIndex, selectedNodeId, showGraph,
-     CONTROL_LINE_COLOR, EDGE_COLOR, FROM_TO_COLOR, WAYPOINT_COLOR, fromControlLabel, toControlLabel, nodeRadius, map?.showControlPoints,
-     getGraphNodes, handleMouseDown, renderRoutePath],
+     CONTROL_LINE_COLOR, EDGE_COLOR, FROM_TO_COLOR, WAYPOINT_COLOR, fromControlLabel, toControlLabel, nodeRadius, showControlPoints,
+     getGraphNodes, handleMouseDown, renderRoutePath, directions],
   );
 
   return (

@@ -3,7 +3,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import { X, Loader2, StopCircle } from "lucide-react";
 import { Button } from "@indoor-o-route-analysis/ui";
-import { RouteAnalyzer, getCourseDifficulty, getDifficultyCategory } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer, getCourseDifficulty, getDifficultyCategory } from "@indoor-o-route-analysis/core";
 import { getCourseControlLabels, getActualCourseControls } from "@indoor-o-route-analysis/core";
 import { DifficultyTag } from "./difficulty-tag";
 import { ScoringModelSelect, escapeHtml, safeHttpUrl } from "@/components/shared";
@@ -17,7 +17,6 @@ interface AllCoursesAnalysisDialogProps {
   isOpen: boolean;
   onClose: () => void;
   event: EventData;
-  mapScale: number;
   initialScoringModelId?: string;
   runningSpeed: number;
 }
@@ -47,7 +46,6 @@ export default function AllCoursesAnalysisDialog({
   isOpen,
   onClose,
   event,
-  mapScale,
   initialScoringModelId,
   runningSpeed,
 }: AllCoursesAnalysisDialogProps) {
@@ -124,15 +122,7 @@ export default function AllCoursesAnalysisDialog({
 
     const courses = event.raceCourses?.[0]?.courses || [];
     const controls = event.raceCourses?.[0]?.controls || [];
-    const polygons = event.raceCourses?.[0]?.polygons || [];
-    const routeAnalyzer = new RouteAnalyzer(
-      controls,
-      event.raceCourses?.[0]?.vertices || [],
-      event.raceCourses?.[0]?.edges || [],
-      mapScale,
-      scoringModel,
-      polygons
-    );
+    const routeAnalyzer = createEventRouteAnalyzer(event, { scoringModel });
 
     const analyzeAll = async () => {
       const totalCourses = courses.length;
@@ -206,14 +196,7 @@ export default function AllCoursesAnalysisDialog({
           let averageDifficulty2: number | undefined;
           if (secondScoringModel) {
             // Re-analyze legs with second scoring model
-            const routeAnalyzer2 = new RouteAnalyzer(
-              controls,
-              event.raceCourses?.[0]?.vertices || [],
-              event.raceCourses?.[0]?.edges || [],
-              mapScale,
-              secondScoringModel,
-              polygons
-            );
+            const routeAnalyzer2 = createEventRouteAnalyzer(event, { scoringModel: secondScoringModel });
             const legs2: Leg[] = [];
             for (let j = 0; j < courseControls.length - 1; j++) {
               const fromCC = courseControls[j];
@@ -290,7 +273,7 @@ export default function AllCoursesAnalysisDialog({
     return () => {
       cancelledRef.current = true;
     };
-  }, [isOpen, event, mapScale, scoringModel, secondScoringModel, runningSpeed, isAnalyzing]);
+  }, [isOpen, event, scoringModel, secondScoringModel, runningSpeed, isAnalyzing]);
 
   if (!isOpen) return null;
 

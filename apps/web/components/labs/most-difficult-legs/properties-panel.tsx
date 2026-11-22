@@ -5,11 +5,12 @@ import { Button } from "@indoor-o-route-analysis/ui";
 import { Input } from "@indoor-o-route-analysis/ui";
 import { Progress } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { RouteAnalyzer, getDifficultyCategory } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer, getDifficultyCategory, getEventScoringModel } from "@indoor-o-route-analysis/core";
 import type { Node, Control } from "@indoor-o-route-analysis/core";
 import { Play, Square } from "lucide-react";
 import { ScrollArea } from "@indoor-o-route-analysis/ui";
 import { RouteLabels } from "@/components/route-labels";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 export type MostDifficultLegsMode = "controls" | "nodes";
 
@@ -60,22 +61,21 @@ export default function MostDifficultLegsPanel({ mode, onRouteSelect }: MostDiff
 
   const runAnalysis = async () => {
     if (!selectedEvent) {
-       alert("No event selected.");
+       notify("No event selected.");
        return;
     }
 
     const controls = selectedEvent.raceCourses?.[0]?.controls || [];
     const nodes = selectedEvent.raceCourses?.[0]?.vertices || [];
     const edges = selectedEvent.raceCourses?.[0]?.edges || [];
-    const scale = selectedEvent.raceCourses?.[0]?.maps?.[0]?.scale || 10000;
 
     if (edges.length === 0) {
-       alert("No graph edges found in the selected event. Please create a graph in the Graph Editor first.");
+       notify("No graph edges found in the selected event. Please create a graph in the Graph view first.");
        return;
     }
 
     if (controls.length === 0 && nodes.length === 0) {
-       alert("No graph or controls available.");
+       notify("No graph or controls available.");
        return;
     }
 
@@ -95,7 +95,7 @@ export default function MostDifficultLegsPanel({ mode, onRouteSelect }: MostDiff
     setSelectedResultId(null);
 
     // Initialize Analyzer
-    const analyzer = new RouteAnalyzer(controls, nodes, edges, scale, undefined, selectedEvent?.raceCourses?.[0]?.polygons || []);
+    const analyzer = createEventRouteAnalyzer(selectedEvent);
 
     const newResults: AnalysisResult[] = [];
     const chunkSize = 5;
@@ -214,7 +214,7 @@ export default function MostDifficultLegsPanel({ mode, onRouteSelect }: MostDiff
         }
     } catch (e) {
         console.error("Analysis failed", e);
-        alert("Analysis failed: " + String(e));
+        notify("Analysis failed: " + String(e), { kind: "error" });
     } finally {
         if (!signal.aborted) {
             setIsRunning(false);
@@ -285,7 +285,7 @@ export default function MostDifficultLegsPanel({ mode, onRouteSelect }: MostDiff
               </thead>
               <tbody>
                   {results.map((res) => {
-                       const category = getDifficultyCategory(res.difficulty);
+                       const category = getDifficultyCategory(res.difficulty, getEventScoringModel(selectedEvent));
                        return (
                            <tr
                                 key={res.id}

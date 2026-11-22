@@ -10,6 +10,7 @@ export * from './components/ui/dialog';
 export * from './components/ui/dropdown-menu';
 export * from './components/ui/input';
 export * from './components/ui/label';
+export * from './components/ui/numeric-input';
 export * from './components/ui/progress';
 export * from './components/ui/radio-group';
 export * from './components/ui/scroll-area';
@@ -25,12 +26,17 @@ export * from './theme-provider';
 
 // Shared rendering
 export * from './control-renderer';
+export * from './directions-renderer';
 export * from './map-overlays';
 
 // Hooks
 export * from './hooks/use-feature-flags';
+export * from './hooks/use-event-route-analyzer';
 export * from './hooks/use-pdf-url';
 export * from './hooks/use-playback';
+
+// Notifications (replace alert/confirm)
+export * from './notifications';
 
 // Context
 export * from './contexts/app-data-context';

@@ -1,7 +1,7 @@
 import type { Control } from "./models/control";
-import type { Node } from "./models/graph";
-import type { Edge } from "./models/graph";
-import { RouteAnalyzer } from "./route-analyzer";
+import type { EventData } from "./models/event";
+import type { RouteAnalyzer } from "./route-analyzer";
+import { createEventRouteAnalyzer } from "./event-route-analyzer";
 
 // Difficulty levels based on Stockholm Indoor Cup definitions
 export type DifficultyLevel = "white" | "yellow" | "orange" | "purple" | "black";
@@ -83,9 +83,20 @@ export class CourseGenerator {
   private controls: Control[];
   private routeAnalyzer: RouteAnalyzer;
 
-  constructor(controls: Control[], nodes: Node[], edges: Edge[], mapScale: number) {
+  /**
+   * @param controls - Candidate controls for the generated course
+   * @param routeAnalyzer - Analyzer for the event; create it with
+   *   `createEventRouteAnalyzer(event)` so leg difficulties match the rest of
+   *   the app (floor polygons, scoring model, map scale).
+   */
+  constructor(controls: Control[], routeAnalyzer: RouteAnalyzer) {
     this.controls = controls;
-    this.routeAnalyzer = new RouteAnalyzer(controls, nodes, edges, mapScale);
+    this.routeAnalyzer = routeAnalyzer;
+  }
+
+  /** Course generator for an event, set up like every other analysis. */
+  static forEvent(event: EventData): CourseGenerator {
+    return new CourseGenerator(event.raceCourses?.[0]?.controls ?? [], createEventRouteAnalyzer(event));
   }
 
   // Calculate route distance between two controls using the graph

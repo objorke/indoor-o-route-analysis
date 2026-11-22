@@ -10,6 +10,7 @@ import EventManagerInfoDialog from "./info-dialog";
 // import { ControlRenderer } from "@indoor-o-route-analysis/ui"; // Removed
 import { EventPropertiesTab } from "./event-properties-tab";
 import { MapPropertiesTab } from "./map-properties-tab";
+import { GeoreferenceTab } from "./georeference-tab";
 import { CoursesTab } from "./courses-tab";
 import { ClassAssignmentsTab } from "./class-assignments-tab";
 import { ControlsTab } from "./controls-tab";
@@ -27,7 +28,16 @@ if (typeof window !== "undefined") {
 
 // import OpenEventDialog from "./open-event-dialog"; // Removed
 
-import { type Course, DEFAULT_NUMBER_OF_COMPETITORS } from "@indoor-o-route-analysis/core";
+import {
+  type Course,
+  type MapData,
+  DEFAULT_MAP_SCALE,
+  DEFAULT_NUMBER_OF_COMPETITORS,
+  removeControl,
+  setPrimaryMap,
+  updatePrimaryMap as updatePrimaryMapOf,
+  updateRaceCourse,
+} from "@indoor-o-route-analysis/core";
 // import type { MapViewerState } from "@/components/map-viewer"; // Removed
 // import { getEventTransform } from "@indoor-o-route-analysis/core"; // Removed
 import type { EventData, ClassCourseAssignment, RaceCourseData } from "@indoor-o-route-analysis/core";
@@ -40,7 +50,7 @@ export default function EventManager() {
     selectedEventId: _selectedEventId,
     selectedEvent,
     setSelectedEventId: _setSelectedEventId,
-    updateEventData,
+    updateEvent,
     addEvent: _addEvent,
     isLoadingEvents,
     unsavedChanges: _unsavedChanges,
@@ -63,7 +73,8 @@ export default function EventManager() {
   const [mapUriInput, setMapUriInput] = useState("");
   const [mapScaleInput, setMapScaleInput] = useState(1000);
   const [mapLayoutInput, setMapLayoutInput] = useState<"horizontal" | "vertical" | "pages">("horizontal");
-  const [saveEncodedInJson, setSaveEncodedInJson] = useState(false);
+  // New events/imports embed the map by default; existing maps keep their stored value (see plan 09 step 3)
+  const [saveEncodedInJson, setSaveEncodedInJson] = useState(true);
 
   const [countryInput, setCountryInput] = useState<"norway" | "sweden" | "">("");
   const [editingCourseId, setEditingCourseId] = useState<string | null>(null);
@@ -102,7 +113,7 @@ export default function EventManager() {
       setMapUriInput(map?.image?.url || "");
       setMapScaleInput(map?.scale || 1000);
       setMapLayoutInput((map?.layout || "horizontal") as "horizontal" | "vertical" | "pages");
-      setSaveEncodedInJson(map?.saveEncoded || false);
+      setSaveEncodedInJson(map ? (map.saveEncoded ?? false) : true);
       setLatitudeInput(map?.latitude || 0);
       setLongitudeInput(map?.longitude || 0);
 
@@ -115,7 +126,7 @@ export default function EventManager() {
       setEventUrlInput("");
       setMapUriInput("");
       setMapScaleInput(1000);
-      setSaveEncodedInJson(false);
+      setSaveEncodedInJson(true);
       setLatitudeInput(0);
       setLongitudeInput(0);
       setCountryInput("");
@@ -124,30 +135,6 @@ export default function EventManager() {
 
   // --- Action Handlers ---
 
-  const handleGeoBlur = async () => {
-    if (!selectedEvent) return;
-    const currentMap = selectedEvent.raceCourses?.[0]?.maps?.[0];
-    if (!currentMap) return;
-
-    const updatedMap = {
-        ...currentMap,
-        latitude: latitudeInput,
-        longitude: longitudeInput
-    };
-    
-    // We update the map inside the raceCourse structure
-    const raceCourses = selectedEvent.raceCourses || [];
-    const updatedRaceCourses = [...raceCourses];
-    if (updatedRaceCourses.length > 0) {
-        updatedRaceCourses[0] = {
-            ...updatedRaceCourses[0],
-            maps: [updatedMap]
-        };
-        await updateEventProperties(selectedEvent.id, { raceCourses: updatedRaceCourses });
-    }
-  };
-
-
   // Add new event
 
   // Import example event - REMOVED
@@ -155,33 +142,45 @@ export default function EventManager() {
   // Update event properties
   const updateEventProperties = useCallback(
     async (id: string, updates: Partial<EventData>, pdfData?: ArrayBuffer) => {
-      await updateEventData(id, updates, pdfData);
+      await updateEvent(id, (e) => ({ ...e, ...updates }), pdfData, { label: "Edit event details" });
     },
-    [updateEventData],
+    [updateEvent],
   );
 
-  const mutateCourses = useCallback(
-    (updater: (courses: CourseItem[]) => CourseItem[]) => {
+  const commitGeo = (geo: { latitude?: number; longitude?: number }) => {
+    if (geo.latitude !== undefined) setLatitudeInput(geo.latitude);
+    if (geo.longitude !== undefined) setLongitudeInput(geo.longitude);
+    updatePrimaryMap((map) => ({ ...map, ...geo }), "Edit georeferencing");
+  };
+
+  /** Replace the primary map of the first race course (no-op without a map). Applied to the latest event. */
+  const updatePrimaryMap = (updater: (map: MapData) => MapData, label = "Edit map") => {
+    if (!selectedEvent) return;
+    updateEvent(selectedEvent.id, (e) => updatePrimaryMapOf(e, updater), undefined, { label });
+  };
+
+  const deleteControl = useCallback(
+    (controlId: string) => {
       if (!selectedEvent) return;
-      
-      const currentCourses = selectedEvent.raceCourses?.[0]?.courses ?? [];
-      const updatedCourses = updater(currentCourses);
-      
-      const currentRaceCourses = selectedEvent.raceCourses ?? [];
-      const newRaceCourses = [...currentRaceCourses];
-      if (newRaceCourses.length === 0) {
-        // Should ideally not happen if properly initialized, but safe fallback
-        newRaceCourses.push({ maps: [], controls: [], courses: [] } as RaceCourseData);
-      }
-
-      newRaceCourses[0] = {
-        ...newRaceCourses[0],
-        courses: updatedCourses,
-      };
-
-      updateEventProperties(selectedEvent.id, { raceCourses: newRaceCourses });
+      updateEvent(selectedEvent.id, (e) => updateRaceCourse(e, (rc) => removeControl(rc, controlId)), undefined, {
+        label: `Delete control ${controlId}`,
+      });
     },
-    [selectedEvent, updateEventProperties]
+    [selectedEvent, updateEvent],
+  );
+
+
+  const mutateCourses = useCallback(
+    (updater: (courses: CourseItem[]) => CourseItem[], label = "Edit courses") => {
+      if (!selectedEvent) return;
+      updateEvent(
+        selectedEvent.id,
+        (e) => updateRaceCourse(e, (rc) => ({ ...rc, courses: updater(rc.courses ?? []) })),
+        undefined,
+        { label },
+      );
+    },
+    [selectedEvent, updateEvent]
   );
 
   const addCourse = useCallback(() => {
@@ -233,7 +232,7 @@ export default function EventManager() {
 
   const deleteCourse = useCallback(
     (courseId: string) => {
-      mutateCourses((courses) => courses.filter((course) => course.id !== courseId));
+      mutateCourses((courses) => courses.filter((course) => course.id !== courseId), "Delete course");
     },
     [mutateCourses]
   );
@@ -264,24 +263,14 @@ export default function EventManager() {
   const mutateClassAssignments = useCallback(
     (updater: (assignments: ClassCourseAssignment[]) => ClassCourseAssignment[]) => {
       if (!selectedEvent) return;
-      
-      const currentAssignments = selectedEvent.raceCourses?.[0]?.classAssignments ?? [];
-      const updatedAssignments = updater(currentAssignments);
-      
-      const currentRaceCourses = selectedEvent.raceCourses ?? [];
-      const newRaceCourses = [...currentRaceCourses];
-      if (newRaceCourses.length === 0) {
-        newRaceCourses.push({ maps: [], controls: [], courses: [], classAssignments: [] } as RaceCourseData);
-      }
-
-      newRaceCourses[0] = {
-        ...newRaceCourses[0],
-        classAssignments: updatedAssignments,
-      };
-
-      updateEventProperties(selectedEvent.id, { raceCourses: newRaceCourses });
+      updateEvent(
+        selectedEvent.id,
+        (e) => updateRaceCourse(e, (rc) => ({ ...rc, classAssignments: updater(rc.classAssignments ?? []) })),
+        undefined,
+        { label: "Edit class assignments" },
+      );
     },
-    [selectedEvent, updateEventProperties]
+    [selectedEvent, updateEvent]
   );
 
   const addClassAssignment = useCallback(() => {
@@ -394,51 +383,32 @@ export default function EventManager() {
   };
 
   const handleMapUriBlur = () => {
-    const currentMap = selectedEvent?.raceCourses?.[0]?.maps?.[0];
-    const currentUrl = currentMap?.image?.url || "";
-    if (selectedEvent && mapUriInput !== currentUrl) {
-      const updatedMap = currentMap
-        ? {
-            ...currentMap,
-            image: { ...currentMap.image, url: mapUriInput },
-          }
-        : {
-            scale: 1000,
-            image: { url: mapUriInput },
-            mapPositionTopLeft: { x: 0, y: 0 },
-            layout: "horizontal" as const,
-          };
-
-      const updatedRaceCourses = [...(selectedEvent.raceCourses || [])];
-      updatedRaceCourses[0] = {
-        ...(updatedRaceCourses[0] || { controls: [], courses: [] }),
-        maps: [updatedMap],
-      };
-
-      updateEventProperties(selectedEvent.id, { raceCourses: updatedRaceCourses });
-    }
+    const currentUrl = selectedEvent?.raceCourses?.[0]?.maps?.[0]?.image?.url || "";
+    if (!selectedEvent || mapUriInput === currentUrl) return;
+    const url = mapUriInput;
+    updateEvent(selectedEvent.id, (e) => {
+      const map = e.raceCourses?.[0]?.maps?.[0];
+      return setPrimaryMap(
+        e,
+        map
+          ? { ...map, image: { ...map.image, url } }
+          : { scale: DEFAULT_MAP_SCALE, image: { url }, mapPositionTopLeft: { x: 0, y: 0 }, layout: "horizontal" },
+      );
+    });
   };
 
-  const handleMapScaleBlur = () => {
+  const commitMapScale = (scale: number) => {
+    setMapScaleInput(scale);
     const currentMap = selectedEvent?.raceCourses?.[0]?.maps?.[0];
-    if (selectedEvent && mapScaleInput !== (currentMap?.scale || 1000)) {
-      const updatedMap = currentMap
-        ? { ...currentMap, scale: mapScaleInput }
-        : {
-            scale: mapScaleInput,
-            image: { url: mapUriInput },
-            mapPositionTopLeft: { x: 0, y: 0 },
-            layout: "horizontal" as const,
-          };
-
-      const updatedRaceCourses = [...(selectedEvent.raceCourses || [])];
-      updatedRaceCourses[0] = {
-        ...(updatedRaceCourses[0] || { controls: [], courses: [] }),
-        maps: [updatedMap],
-      };
-
-      updateEventProperties(selectedEvent.id, { raceCourses: updatedRaceCourses });
-    }
+    if (!selectedEvent || scale === (currentMap?.scale || DEFAULT_MAP_SCALE)) return;
+    const url = mapUriInput;
+    updateEvent(selectedEvent.id, (e) => {
+      const map = e.raceCourses?.[0]?.maps?.[0];
+      return setPrimaryMap(
+        e,
+        map ? { ...map, scale } : { scale, image: { url }, mapPositionTopLeft: { x: 0, y: 0 }, layout: "horizontal" },
+      );
+    });
   };
 
   const handleCountryChange = (newCountry: string) => {
@@ -467,6 +437,13 @@ export default function EventManager() {
     }
   };
 
+  const commitEventImage = (value: string) => {
+    setEventImageUrlInput(value);
+    if (selectedEvent && value !== (selectedEvent.eventImageUrl || "")) {
+      updateEventProperties(selectedEvent.id, { eventImageUrl: value });
+    }
+  };
+
   const handleMapDownloadUrlBlur = () => {
     if (selectedEvent && mapDownloadUrlInput !== (selectedEvent.mapDownloadUrl || "")) {
       updateEventProperties(selectedEvent.id, {
@@ -478,28 +455,15 @@ export default function EventManager() {
   const handleMapLayoutChange = (newLayout: string) => {
     const layout = newLayout as "horizontal" | "vertical" | "pages";
     setMapLayoutInput(layout);
-    if (selectedEvent) {
-      const currentMap = selectedEvent.raceCourses?.[0]?.maps?.[0];
-      const updatedMap = currentMap
-        ? {
-            ...currentMap,
-            layout,
-          }
-        : {
-            scale: 1000,
-            image: { url: mapUriInput },
-            mapPositionTopLeft: { x: 0, y: 0 },
-            layout,
-          };
-
-      const updatedRaceCourses = [...(selectedEvent.raceCourses || [])];
-      updatedRaceCourses[0] = {
-        ...(updatedRaceCourses[0] || { controls: [], courses: [] }),
-        maps: [updatedMap],
-      };
-
-      updateEventProperties(selectedEvent.id, { raceCourses: updatedRaceCourses });
-    }
+    if (!selectedEvent) return;
+    const url = mapUriInput;
+    updateEvent(selectedEvent.id, (e) => {
+      const map = e.raceCourses?.[0]?.maps?.[0];
+      return setPrimaryMap(
+        e,
+        map ? { ...map, layout } : { scale: DEFAULT_MAP_SCALE, image: { url }, mapPositionTopLeft: { x: 0, y: 0 }, layout },
+      );
+    });
   };
 
   if (isLoadingEvents) {
@@ -519,8 +483,9 @@ export default function EventManager() {
           <Tabs defaultValue="event-properties" className="w-full h-full flex flex-col">
             <div className="px-6 py-2 border-b flex items-center justify-between">
               <TabsList>
-                <TabsTrigger value="event-properties">Event Properties</TabsTrigger>
-                <TabsTrigger value="map-properties">Map Properties</TabsTrigger>
+                <TabsTrigger value="event-properties">Event</TabsTrigger>
+                <TabsTrigger value="map-properties">Map</TabsTrigger>
+                <TabsTrigger value="georeference">Georeference</TabsTrigger>
                 <TabsTrigger value="courses">Courses</TabsTrigger>
                 <TabsTrigger value="class-assignments">Class Assignments</TabsTrigger>
                 <TabsTrigger value="controls">Controls</TabsTrigger>
@@ -544,6 +509,7 @@ export default function EventManager() {
                 eventImageUrlInput={eventImageUrlInput}
                 setEventImageUrlInput={setEventImageUrlInput}
                 handleEventImageUrlBlur={handleEventImageUrlBlur}
+                commitEventImage={commitEventImage}
                 mapDownloadUrlInput={mapDownloadUrlInput}
                 setMapDownloadUrlInput={setMapDownloadUrlInput}
                 handleMapDownloadUrlBlur={handleMapDownloadUrlBlur}
@@ -559,10 +525,8 @@ export default function EventManager() {
                 setMapUriInput={setMapUriInput}
                 handleMapUriBlur={handleMapUriBlur}
                 pdfjsLib={pdfjsLib}
-                updateEventProperties={updateEventProperties}
                 mapScaleInput={mapScaleInput}
-                setMapScaleInput={setMapScaleInput}
-                handleMapScaleBlur={handleMapScaleBlur}
+                commitMapScale={commitMapScale}
                 mapLayoutInput={mapLayoutInput}
                 handleMapLayoutChange={handleMapLayoutChange}
                 saveEncodedInJson={saveEncodedInJson}
@@ -570,13 +534,17 @@ export default function EventManager() {
                 pdfBlobUrl={pdfBlobUrl}
                 cursorCoordinates={cursorCoordinates}
                 setCursorCoordinates={setCursorCoordinates}
-              latitudeInput={latitudeInput}
-              setLatitudeInput={setLatitudeInput}
-              longitudeInput={longitudeInput}
-              setLongitudeInput={setLongitudeInput}
-              handleGeoBlur={handleGeoBlur}
-            />
-          </TabsContent>
+              />
+            </TabsContent>
+
+            <TabsContent value="georeference" className="flex-1 overflow-hidden p-0">
+              <GeoreferenceTab
+                hasMap={!!selectedEvent.raceCourses?.[0]?.maps?.[0]}
+                latitudeInput={latitudeInput}
+                longitudeInput={longitudeInput}
+                commitGeo={commitGeo}
+              />
+            </TabsContent>
           <TabsContent value="courses" className="flex-1 overflow-hidden flex flex-col p-0">
             <CoursesTab
                 selectedEventCourses={selectedEventCourses}
@@ -596,6 +564,7 @@ export default function EventManager() {
                 controls={selectedEvent.raceCourses?.[0]?.controls || []}
                 courses={selectedEventCourses}
                 polygons={selectedEvent.raceCourses?.[0]?.polygons || []}
+                onDeleteControl={deleteControl}
             />
           </TabsContent>
           <TabsContent value="class-assignments" className="flex-1 overflow-hidden flex flex-col p-0">

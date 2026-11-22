@@ -1,6 +1,7 @@
 import type { Control } from "./models/control";
 import type { Course } from "./models/course";
 import type { Node, Edge } from "./models/graph";
+import type { RaceCourseData } from "./models/event";
 
 /**
  * Checks if a control ID is unique among existing controls.
@@ -72,4 +73,29 @@ export function updateControlIdInGraph(
   });
 
   return { nodes: updatedNodes, edges: updatedEdges };
+}
+
+/** Names of the courses that use a control (each course once, in course order). */
+export function getCoursesUsingControl(courses: Course[], controlId: string): Course[] {
+  return courses.filter((course) => (course.controls || []).some((cc) => cc.controlId === controlId));
+}
+
+/**
+ * Delete a control everywhere it is referenced: the control list, every
+ * course's control sequence, and graph edges to or from it. This is the single
+ * implementation used by all views, so no dangling course legs or edges remain.
+ */
+export function removeControl(raceCourse: RaceCourseData, controlId: string): RaceCourseData {
+  return {
+    ...raceCourse,
+    controls: raceCourse.controls?.filter((c) => c.id !== controlId),
+    courses: raceCourse.courses?.map((course) =>
+      (course.controls || []).some((cc) => cc.controlId === controlId)
+        ? { ...course, controls: course.controls.filter((cc) => cc.controlId !== controlId) }
+        : course,
+    ),
+    ...(raceCourse.edges
+      ? { edges: raceCourse.edges.filter((e) => e.from !== controlId && e.to !== controlId) }
+      : {}),
+  };
 }

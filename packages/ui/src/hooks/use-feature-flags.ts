@@ -3,17 +3,23 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 export interface FeatureFlags {
+  /** Course Setting view in the top bar. On by default. */
+  courseSetting: boolean;
   routeBuilder: boolean;
   labs: boolean;
   modifyGraph: boolean;
+  /** Directions view (ISInOM course directions) and the directions layer in the other map views. */
+  directions: boolean;
 }
 
 const FEATURE_FLAGS_STORAGE_KEY = "feature-flags";
 
 const DEFAULT_FEATURE_FLAGS: FeatureFlags = {
+  courseSetting: true,
   routeBuilder: false,
   labs: false,
   modifyGraph: false,
+  directions: false,
 };
 
 function loadFeatureFlags(): FeatureFlags {
@@ -70,6 +76,17 @@ function notifyListeners() {
   listeners.forEach((listener) => listener());
 }
 
+/** Restore all feature flags to their defaults (and forget the stored value). */
+export function resetFeatureFlags(): void {
+  try {
+    if (typeof window !== "undefined") localStorage.removeItem(FEATURE_FLAGS_STORAGE_KEY);
+  } catch {
+    // ignore
+  }
+  cachedFlags = DEFAULT_FEATURE_FLAGS;
+  notifyListeners();
+}
+
 export function useFeatureFlags() {
   const flags = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
@@ -91,5 +108,6 @@ export function useFeatureFlags() {
     flags,
     updateFlag,
     setFeatureFlags,
+    resetFeatureFlags,
   };
 }

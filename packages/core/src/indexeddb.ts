@@ -47,6 +47,41 @@ export async function initDB(): Promise<IDBDatabase> {
   });
 }
 
+/**
+ * Delete the whole IndexedDB database (events, map files, metadata).
+ * Closes the cached connection first so the delete isn't blocked by this tab.
+ */
+export async function deleteDatabase(): Promise<void> {
+  if (db) {
+    db.close();
+    db = null;
+  }
+  await new Promise<void>((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(DB_NAME);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    // Another tab still holds a connection; the delete completes once it closes.
+    request.onblocked = () => resolve();
+  });
+}
+
+/**
+ * Erase everything the app stores on the device: the IndexedDB database (events,
+ * map PDFs, metadata) and all localStorage/sessionStorage entries (settings,
+ * feature flags, recent files, UI state). The service-worker app cache is kept so
+ * the app still works offline. Reload the page afterwards.
+ */
+export async function clearAllUserData(): Promise<void> {
+  await deleteDatabase();
+  for (const storage of [globalThis.localStorage, globalThis.sessionStorage]) {
+    try {
+      storage?.clear();
+    } catch {
+      // storage unavailable
+    }
+  }
+}
+
 // Maps functions removed as MapRecord no longer has ID and Maps are embedded in Events
 
 // Helper to find primary map ID

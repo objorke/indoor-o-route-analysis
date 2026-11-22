@@ -5,6 +5,7 @@
 
 import { type EventData } from "../models/event";
 import { migrateEventData } from "../migrations";
+import { assertValidEventStructure } from "./event-validation";
 
 /**
  * Parse JSON string into EventData
@@ -36,7 +37,17 @@ export function parseEventFromJSON(jsonString: string): EventData {
     throw new Error("Missing or invalid required field: id");
   }
 
-  return migrateEventData(parsed);
+  let migrated: EventData;
+  try {
+    migrated = migrateEventData(parsed);
+  } catch (error) {
+    // Migration assumes the basic shape; report what is wrong with it instead of a TypeError
+    assertValidEventStructure(parsed);
+    throw new Error(`Invalid event file: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  // Reject malformed files here, with a readable message, rather than crashing a view later
+  assertValidEventStructure(migrated);
+  return migrated;
 }
 
 /**

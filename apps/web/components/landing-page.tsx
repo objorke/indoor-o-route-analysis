@@ -95,7 +95,7 @@ export default function LandingPage() {
                     <h3 className="font-semibold">Draw graph</h3>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    Use the Graph Editor to create a visual representation of your route. This is the most laborious
+                    Use the Graph view to create a visual representation of your route. This is the most laborious
                     part of preparing the analysis. Add nodes, edges, and connections between control points. Define
                     one-way passages, stairs, and connections between different map parts or floors.
                   </p>

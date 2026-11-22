@@ -15,7 +15,32 @@ import {
   SHADOW_TEXT_STROKE_WIDTH,
   CONTROL_TEXT_SIZE,
   FINISH_INNER_CIRCLE_RADIUS,
+  MAP_EXCHANGE_TRIANGLE_RADIUS,
 } from "@indoor-o-route-analysis/core";
+import type { MapExchangeType } from "@indoor-o-route-analysis/core";
+
+/**
+ * SVG polygon points for an equilateral triangle centred at (cx, cy) with the
+ * given circumradius, with its first vertex pointing in direction `angle`
+ * (radians, 0 = right, -π/2 = up).
+ */
+export function trianglePoints(cx: number, cy: number, circumradius: number, angle: number): string {
+  return [0, 1, 2]
+    .map((i) => {
+      const a = angle + (i * 2 * Math.PI) / 3;
+      return `${cx + circumradius * Math.cos(a)},${cy + circumradius * Math.sin(a)}`;
+    })
+    .join(" ");
+}
+
+/** Direction from `from` to `to`, or pointing up when `to` is missing/coincident. */
+function directionAngle(from: { x: number; y: number }, to?: { x: number; y: number }): number {
+  if (!to) return -Math.PI / 2;
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  if (dx === 0 && dy === 0) return -Math.PI / 2;
+  return Math.atan2(dy, dx);
+}
 
 function isLightColor(color: string): boolean {
   if (!color) return false;
@@ -54,6 +79,12 @@ interface ControlRenderProps {
   label?: string; // Optional label override
   controlLabelMap?: Map<string, string>; // Map of control ID → display label (handles repeated controls)
   showControlPoint?: boolean; // Show a small dot at the center of the control circle
+  /**
+   * Map exchange (change or flip) at this control. The control is drawn as both
+   * a circle and a start triangle; the triangle points towards `next` (the next
+   * control in the course, in the same pixel space) when given.
+   */
+  mapExchange?: { type: MapExchangeType; next?: { x: number; y: number } };
 }
 
 interface LegRenderProps {
@@ -122,6 +153,7 @@ export class ControlRenderer {
     label,
     controlLabelMap,
     showControlPoint = false,
+    mapExchange,
   }: ControlRenderProps): ReactNode {
     const isInCourse = courseControlCodes.includes(control.id);
     const r = control.type === "start" ? START_TRIANGLE_RADIUS : CONTROL_RADIUS;
@@ -187,7 +219,7 @@ export class ControlRenderer {
       });
     }
 
-    // Regular control
+    // Regular control (optionally with a map exchange triangle)
     return this.renderRegularControl({
       control,
       r,
@@ -198,6 +230,9 @@ export class ControlRenderer {
       showCodeLabel: !isInCourse,
       needsContrast,
       showControlPoint,
+      mapExchangeTriangle: mapExchange
+        ? trianglePoints(control.x, control.y, MAP_EXCHANGE_TRIANGLE_RADIUS, directionAngle(control, mapExchange.next))
+        : undefined,
     });
   }
 
@@ -287,27 +322,8 @@ export class ControlRenderer {
     showControlPoint?: boolean;
   }): ReactNode {
     // Equilateral triangle centered at control position, pointing towards next control
-    let angle = -Math.PI / 2; // Default: point up
-    if (courseIndex >= 0 && courseIndex < courseControls.length - 1) {
-      const nextControl = courseControls[courseIndex + 1];
-      const dx = nextControl.x - control.x;
-      const dy = nextControl.y - control.y;
-      angle = Math.atan2(dy, dx);
-    }
-
-    const circumradius = r;
-    const angle1 = angle;
-    const angle2 = angle + (2 * Math.PI) / 3;
-    const angle3 = angle + (4 * Math.PI) / 3;
-
-    const x1 = control.x + circumradius * Math.cos(angle1);
-    const y1 = control.y + circumradius * Math.sin(angle1);
-    const x2 = control.x + circumradius * Math.cos(angle2);
-    const y2 = control.y + circumradius * Math.sin(angle2);
-    const x3 = control.x + circumradius * Math.cos(angle3);
-    const y3 = control.y + circumradius * Math.sin(angle3);
-
-    const points = `${x1},${y1} ${x2},${y2} ${x3},${y3}`;
+    const next = courseIndex >= 0 && courseIndex < courseControls.length - 1 ? courseControls[courseIndex + 1] : undefined;
+    const points = trianglePoints(control.x, control.y, r, directionAngle(control, next));
     const textFilter = needsContrast ? maybeGlow : undefined;
     const textStyle = needsContrast
       ? undefined
@@ -484,6 +500,7 @@ export class ControlRenderer {
     showCodeLabel,
     needsContrast,
     showControlPoint,
+    mapExchangeTriangle,
   }: {
     control: Control & { x: number; y: number };
     r: number;
@@ -494,6 +511,8 @@ export class ControlRenderer {
     showCodeLabel: boolean;
     needsContrast: boolean;
     showControlPoint?: boolean;
+    /** Polygon points of the map exchange triangle, drawn on top of the circle. */
+    mapExchangeTriangle?: string;
   }): ReactNode {
     const textFilter = needsContrast ? maybeGlow : undefined;
     const textStyle = needsContrast
@@ -517,6 +536,18 @@ export class ControlRenderer {
           opacity={0.95}
           filter={maybeGlow}
         />
+        {mapExchangeTriangle && (
+          <polygon
+            data-testid="map-exchange-triangle"
+            points={mapExchangeTriangle}
+            fill="transparent"
+            stroke={strokeColor}
+            strokeWidth={strokeWidth}
+            opacity={0.95}
+            filter={maybeGlow}
+            pointerEvents="none"
+          />
+        )}
         {showControlPoint && (
           <circle
             cx={control.x}

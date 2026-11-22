@@ -27,7 +27,6 @@ export interface MapData {
   /** Per-page coordinate transforms used when pageTransformMode is "manual". Index 0 = page 1. */
   pageTransforms?: PageTransform[];
   saveEncoded?: boolean;
-  showControlPoints?: boolean;
 }
 
 export interface MapImage {

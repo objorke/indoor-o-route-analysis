@@ -11,7 +11,7 @@ describe('Full Event Scoring', () => {
   let eventData: EventData;
 
   beforeAll(() => {
-    const filePath = path.join(process.cwd(), '../../apps/web/public/examples/2023-02-04-Stockholm-Indoor-Cup-E1.json');
+    const filePath = path.join(process.cwd(), '../../test-data/events/2023-02-04-Stockholm-Indoor-Cup-E1.json');
     const jsonString = fs.readFileSync(filePath, 'utf-8');
     eventData = parseEventFromJSON(jsonString);
   });

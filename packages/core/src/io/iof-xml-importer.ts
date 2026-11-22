@@ -1,7 +1,10 @@
 import type { EventData, RaceCourseData, ClassCourseAssignment } from "../models/event";
 import type { Control } from "../models/control";
-import { type Course, DEFAULT_NUMBER_OF_COMPETITORS } from "../models/course";
+import { edgeLengthOverride } from "../models/graph";
+import { type Course, type MapExchangeType, DEFAULT_NUMBER_OF_COMPETITORS } from "../models/course";
 import type { Node } from "../models/graph";
+import type { Polygon } from "../models/polygon";
+import { isDirectionPointKind, type DirectionFeature } from "../models/directions";
 import type { Edge } from "../models/graph";
 import type { MapData } from "../models/map";
 
@@ -22,29 +25,29 @@ export class IOFXmlImporter {
       throw new Error(`XML parsing error: ${parserError.textContent}`);
     }
 
-    // Helper functions to handle namespaces
-    const firstChildByLocalName = (el: Element | Document, name: string): Element | null => {
-      const nodes = (el as Document).getElementsByTagName
-        ? (el as Document).getElementsByTagName("*")
-        : (el as Element).getElementsByTagName("*");
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i] as Element;
-        if (n.localName === name && (el === doc || n.parentElement === el)) return n;
-      }
-      return null;
-    };
-
-    const allChildrenByLocalName = (el: Element | Document, name: string): Element[] => {
+    // Helper functions to handle namespaces. They walk `children` rather than
+    // getElementsByTagName("*"), which returns nothing for XML documents in
+    // linkedom (used by the CLIs); `children` works in browsers, jsdom and linkedom.
+    // From the document: any descendant; from an element: direct children only.
+    const candidates = (el: Element | Document): Element[] => {
+      if (el !== doc) return Array.from((el as Element).children);
       const out: Element[] = [];
-      const nodes = (el as Document).getElementsByTagName
-        ? (el as Document).getElementsByTagName("*")
-        : (el as Element).getElementsByTagName("*");
-      for (let i = 0; i < nodes.length; i++) {
-        const n = nodes[i] as Element;
-        if (n.localName === name && (el === doc || n.parentElement === el)) out.push(n);
+      const stack: Element[] = Array.from(doc.children).reverse();
+      while (stack.length > 0) {
+        const n = stack.pop() as Element;
+        out.push(n);
+        for (let i = n.children.length - 1; i >= 0; i--) stack.push(n.children[i]);
       }
       return out;
     };
+    // linkedom keeps the prefix in localName ("x:Routes"); strip it everywhere
+    const localNameOf = (n: Element) => (n.localName || n.tagName).split(":").pop() || "";
+
+    const firstChildByLocalName = (el: Element | Document, name: string): Element | null =>
+      candidates(el).find((n) => localNameOf(n) === name) ?? null;
+
+    const allChildrenByLocalName = (el: Element | Document, name: string): Element[] =>
+      candidates(el).filter((n) => localNameOf(n) === name);
 
     const textOf = (el: Element | null): string => (el?.textContent || "").trim();
 
@@ -176,10 +179,18 @@ export class IOFXmlImporter {
         const mapText = mapTextRaw || undefined;
         // const number = mapTextRaw ? Number(mapTextRaw) : undefined;
 
+        // Map exchange extension: <Extensions><x:MapExchange type="change|flip"/></Extensions>
+        const ccExtensionsEl = firstChildByLocalName(ccEl, "Extensions");
+        const mapExchangeEl = ccExtensionsEl ? firstChildByLocalName(ccExtensionsEl, "MapExchange") : null;
+        const mapExchangeType = mapExchangeEl?.getAttribute("type");
+        const mapExchange: MapExchangeType | undefined =
+          mapExchangeType === "change" || mapExchangeType === "flip" ? mapExchangeType : undefined;
+
         return {
           controlId: code || "", // CourseControl uses 'controlId' for control code/id
           mapText: mapText,
           type: cType,
+          ...(mapExchange ? { mapExchange } : {}),
         };
       });
 
@@ -227,6 +238,7 @@ export class IOFXmlImporter {
         const oneWay = eEl.getAttribute("oneWay") === "true";
         const teleport = eEl.getAttribute("teleport") === "true";
         const reverseLabel = eEl.getAttribute("reverseLabel") || undefined;
+        const length = edgeLengthOverride({ length: Number(eEl.getAttribute("length") ?? Number.NaN) });
 
         if (from && to) {
           edges.push({
@@ -236,6 +248,83 @@ export class IOFXmlImporter {
             oneWay,
             ignoreLength: teleport,
             reverseLabel,
+            ...(length !== undefined ? { length } : {}),
+          });
+        }
+      });
+    }
+
+    // Parse custom extension: Polygons (floor outlines)
+    const polygons: Polygon[] = [];
+    const polygonsEl = firstChildByLocalName(raceCourseData, "Polygons");
+    if (polygonsEl) {
+      const parsePoints = (text: string) =>
+        text
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((pair) => {
+            const [x, y] = pair.split(",").map(Number);
+            return { x, y };
+          })
+          .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y));
+      allChildrenByLocalName(polygonsEl, "Polygon").forEach((pEl) => {
+        const id = pEl.getAttribute("id");
+        const level = Number(pEl.getAttribute("level"));
+        const points = parsePoints(textOf(firstChildByLocalName(pEl, "Points")));
+        if (!id || !Number.isFinite(level) || points.length < 3) return;
+        const polygon: Polygon = { id, level, points };
+        const elevation = pEl.getAttribute("elevation");
+        if (elevation !== null && Number.isFinite(Number(elevation))) polygon.elevation = Number(elevation);
+        const ox = pEl.getAttribute("originX");
+        const oy = pEl.getAttribute("originY");
+        if (ox !== null && oy !== null && Number.isFinite(Number(ox)) && Number.isFinite(Number(oy))) {
+          polygon.origin = { x: Number(ox), y: Number(oy) };
+        }
+        const holes = allChildrenByLocalName(pEl, "Hole")
+          .map((h) => parsePoints(textOf(h)))
+          .filter((h) => h.length >= 3);
+        if (holes.length > 0) polygon.holes = holes;
+        polygons.push(polygon);
+      });
+    }
+
+    // Parse custom extension: Directions
+    const directions: DirectionFeature[] = [];
+    const directionsEl = firstChildByLocalName(raceCourseData, "Directions");
+    if (directionsEl) {
+      const LINE_KINDS = ["uncrossable", "oob-boundary", "oob-area-boundary"];
+      const toPoints = (text: string) =>
+        text
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean)
+          .map((pair) => pair.split(",").map(Number))
+          .filter(([x, y]) => Number.isFinite(x) && Number.isFinite(y))
+          .map(([x, y]) => ({ x, y }));
+      allChildrenByLocalName(directionsEl, "Symbol").forEach((el) => {
+        const id = el.getAttribute("id");
+        const kind = el.getAttribute("kind") ?? "";
+        if (!id) return;
+        if (isDirectionPointKind(kind)) {
+          const x = Number(el.getAttribute("x"));
+          const y = Number(el.getAttribute("y"));
+          const rotation = Number(el.getAttribute("rotation") ?? 0);
+          if ([x, y, rotation].every(Number.isFinite)) directions.push({ id, kind, position: { x, y }, rotation });
+          return;
+        }
+        const points = toPoints(textOf(firstChildByLocalName(el, "Points")));
+        if (points.length < 2) return;
+        if (kind === "one-way") {
+          directions.push({ id, kind, points, style: el.getAttribute("style") === "single" ? "single" : "line" });
+        } else if (kind === "oob-area") {
+          if (points.length >= 3) directions.push({ id, kind, points, ...(el.getAttribute("outline") === "false" ? { outline: false } : {}) });
+        } else if (LINE_KINDS.includes(kind)) {
+          directions.push({
+            id,
+            kind: kind as "uncrossable" | "oob-boundary" | "oob-area-boundary",
+            points,
+            ...(el.getAttribute("closed") === "true" ? { closed: true } : {}),
           });
         }
       });
@@ -248,6 +337,8 @@ export class IOFXmlImporter {
       classAssignments,
       vertices,
       edges,
+      ...(polygons.length > 0 ? { polygons } : {}),
+      ...(directions.length > 0 ? { directions } : {}),
     };
 
     // Build partial event record

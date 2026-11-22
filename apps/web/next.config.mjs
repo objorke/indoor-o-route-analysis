@@ -1,8 +1,5 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  experimental: {
-    agentUpgrade: "security",
-  },
   output: "export",
   typescript: {
     ignoreBuildErrors: false,

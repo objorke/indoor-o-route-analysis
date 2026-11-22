@@ -2,23 +2,26 @@
 
 import type React from "react";
 import { useCallback, useMemo, useRef, useEffect, memo, forwardRef, useImperativeHandle, useState } from "react";
-import { jsPDF } from "jspdf";
 import MapViewer, { type MapViewerState, type MapViewerController, eventPosToMultiPagePixels } from "@/components/map-viewer";
-import { useAppData } from "@indoor-o-route-analysis/ui";
-import { ControlRenderer, renderLegConnections, renderHaloFilterDefs, HALO_FILTER_IDS, buildRoutePathSegments } from "@indoor-o-route-analysis/ui";
+import { useAppData, useSettings } from "@indoor-o-route-analysis/ui";
+import { ControlRenderer, renderLegConnections, renderHaloFilterDefs, HALO_FILTER_IDS, renderDirections } from "@indoor-o-route-analysis/ui";
 import { exportCanvasAndSvgAsImage, exportCanvasAndSvgAsPdf } from "@indoor-o-route-analysis/core/export";
 import { ExportNaming } from "@indoor-o-route-analysis/core";
 import type { Edge, Node } from "@indoor-o-route-analysis/core";
 import type { Control, CourseControl } from "@indoor-o-route-analysis/core";
-import { RouteAnalyzer, type RouteInfo } from "@indoor-o-route-analysis/core";
+import type { RouteInfo } from "@indoor-o-route-analysis/core";
+import { useEventRouteAnalyzer } from "@indoor-o-route-analysis/ui";
 import { getActiveMap } from "@indoor-o-route-analysis/core";
 import type { MapData } from "@indoor-o-route-analysis/core";
 import type { VideoExportSettings } from "@/components/shared/video-export-dialog";
 import { VideoExporter, type VideoExportContext } from "@indoor-o-route-analysis/core/export";
-import { MM_TO_METERS, ROUTE_ANALYSIS_COLORS } from "@indoor-o-route-analysis/core";
+import { MM_TO_METERS, ROUTE_ANALYSIS_COLORS, PRIMARY_ROUTE_STROKE_WIDTH, ALTERNATIVE_ROUTE_STROKE_WIDTH } from "@indoor-o-route-analysis/core";
 import { getActualCourseControls, getCourseControlLabels, getCourseControlLabelMap } from "@indoor-o-route-analysis/core";
 import { GraphOverlay } from "@/components/shared";
+import { exportAllLegsPdf } from "./export-all-legs-pdf";
+import { notify } from "@indoor-o-route-analysis/ui";
 
+import { useVisibleDirections } from "@/components/directions/use-visible-directions";
 // Interface for what we display
 interface DisplayedRoute {
     path: string[];
@@ -369,6 +372,8 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
     ref,
   ) {
     const { selectedEvent, runningSpeed: contextRunningSpeed } = useAppData();
+    const directions = useVisibleDirections(selectedEvent);
+    const { showControlPoints } = useSettings();
     // Use prop if provided (for flexibility), otherwise context or default 3
     const effectiveRunningSpeed = runningSpeed ?? contextRunningSpeed ?? 3;
 
@@ -458,217 +463,19 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
         );
       },
       exportAllLegsPdf: async (onProgress?: (progress: number) => void, signal?: AbortSignal) => {
-        const controller = controllerRef.current;
+        const canvas = controllerRef.current?.getCanvas();
         const state = mapStateRef.current;
-        if (!controller || !selectedEvent || !selectedCourseId || !state) return;
-
-        const canvas = controller.getCanvas();
-        if (!canvas) return;
-
-        // Find course
-        const course = selectedEvent.raceCourses?.[0]?.courses?.find((c) => c.id === selectedCourseId);
-        if (!course || !course.controls || course.controls.length < 2) return;
-
-        const courseControlsList = course.controls;
-        // Get actual course controls (intermediate start controls removed) for leg iteration
-        const filteredControlsList = getActualCourseControls(courseControlsList, controls);
-        const combinedCanvas = document.createElement("canvas");
-        combinedCanvas.width = canvas.width;
-        combinedCanvas.height = canvas.height;
-        const ctx = combinedCanvas.getContext("2d");
-        if (!ctx) return;
-
-        const pdf = new jsPDF({
-          orientation: canvas.width > canvas.height ? "l" : "p",
-          unit: "px",
-          format: [canvas.width, canvas.height],
+        if (!canvas || !state || !selectedEvent || !selectedCourseId) return;
+        await exportAllLegsPdf({
+          canvas,
+          pixelsPerMM: state.pixelsPerMM,
+          width: state.pdfDimensions.width,
+          height: state.pdfDimensions.height,
+          event: selectedEvent,
+          courseId: selectedCourseId,
+          onProgress,
+          signal,
         });
-
-        const courseControls = courseControlsList
-          .map((cc: CourseControl): ControlWithPos | null => {
-            const control = controls.find((c) => c.id === cc.controlId);
-            if (!control) return null;
-            return { ...control, mapText: cc.mapText ?? control.mapText ?? "" } as ControlWithPos;
-          })
-          .filter((c): c is ControlWithPos => c !== null);
-
-        const svgControlLabels = getCourseControlLabels(courseControlsList, controls);
-
-        const activeMap = getActiveMap(selectedEvent, selectedCourseId);
-
-        const controlPxMap = new Map<string, ControlWithPos>();
-        controls.forEach((c) => {
-          const pt = eventPosToMultiPagePixels({ x: c.mapPosition.x, y: c.mapPosition.y }, activeMap, state.pixelsPerMM);
-          controlPxMap.set(c.id, { ...c, mapText: c.mapText ?? "", x: pt.x, y: pt.y } as ControlWithPos);
-        });
-
-        const courseControlsPx: ControlWithPos[] = courseControls
-          .map((c): ControlWithPos | null => {
-            const px = controlPxMap.get(c.id);
-            return px ? { ...px, mapText: c.mapText } : null;
-          })
-          .filter((c): c is ControlWithPos => c !== null);
-        const _courseControlCodes = courseControls.map((c) => c.mapText || c.id);
-
-        const routeAnalyzer = new RouteAnalyzer(controls, nodes, edges, scale, undefined, selectedEvent?.raceCourses?.[0]?.polygons || []);
-
-        // Helper to draw SVG to canvas
-        const drawSvgToCanvas = (svgString: string): Promise<void> => {
-          return new Promise((resolve, reject) => {
-            const img = new Image();
-            img.onload = () => {
-              ctx.drawImage(img, 0, 0);
-              resolve();
-            };
-            img.onerror = reject;
-            img.src = "data:image/svg+xml;base64," + btoa(unescape(encodeURIComponent(svgString)));
-          });
-        };
-
-        const findNodePx = (nodeId: string): (Node & { x: number; y: number }) | ControlWithPos | null => {
-          const n = nodes.find((no: Node) => no.id === nodeId);
-          if (n) {
-            const pt = eventPosToMultiPagePixels({ x: n.x, y: n.y }, activeMap, state.pixelsPerMM);
-            return { ...n, x: pt.x, y: pt.y };
-          }
-          return controlPxMap.get(nodeId) ?? null;
-        };
-
-        let pageIndex = 0;
-        const totalLegs = filteredControlsList.length - 1;
-
-        for (let i = 0; i < totalLegs; i++) {
-          if (signal?.aborted) {
-               throw new Error("Export cancelled");
-          }
-          
-          if (onProgress) {
-             onProgress((i) / totalLegs);
-             // Allow UI update
-             await new Promise(resolve => setTimeout(resolve, 0));
-          }
-
-          const fromId = filteredControlsList[i].controlId;
-          const toId = filteredControlsList[i + 1].controlId;
-
-          if (!fromId || !toId || fromId === toId) continue;
-
-          // Clear canvas and draw background
-          ctx.clearRect(0, 0, combinedCanvas.width, combinedCanvas.height);
-          ctx.fillStyle = "white";
-          ctx.fillRect(0, 0, combinedCanvas.width, combinedCanvas.height);
-          ctx.drawImage(canvas, 0, 0);
-
-          // Find route
-          const routes = routeAnalyzer.findAlternativePathsBetweenControls(fromId, toId);
-          const bestRoute = routes[0]; // Best route is first
-
-          // Generate SVG content manually for this leg
-          // Only draw the route and arrow positions + leg lines + controls
-
-          // Start SVG
-          let svgContent = `<svg width="${state.pdfDimensions.width}" height="${state.pdfDimensions.height}" xmlns="http://www.w3.org/2000/svg">`;
-
-          // 1. Leg Lines (all leg lines, dim unselected, highlight current)
-          // Draw all leg lines
-          if (courseControlsPx.length > 1) {
-            for (let cIdx = 0; cIdx < courseControlsPx.length - 1; cIdx++) {
-              const c1 = courseControlsPx[cIdx];
-              const c2 = courseControlsPx[cIdx + 1];
-              const coords = ControlRenderer.getLegCoordinates(c1, c2);
-              const isCurrent = cIdx === i;
-              const color = "#8b5cf6";
-              const width = isCurrent ? 4 : 2;
-
-              svgContent += `<line x1="${coords.x1}" y1="${coords.y1}" x2="${coords.x2}" y2="${coords.y2}" stroke="${color}" stroke-width="${width}" stroke-linecap="round" />`;
-            }
-          }
-
-          // 2. Controls
-          courseControlsPx.forEach((c, idx) => {
-            // We need to render the circle/triangle/double circle
-            // Simplified rendering for export
-            const isStart = idx === 0;
-            const isFinish = idx === courseControlsPx.length - 1;
-            const color = "#8b5cf6";
-            const r = ControlRenderer.CONTROL_RADIUS;
-
-            // Very basic manual SVG generation for controls to match ControlRenderer
-            // Ideally we'd use ControlRenderer.renderControl but it returns JSX
-            // We'll just draw circles for now as a fallback/simplification?
-            // Or better, let's just serialize what we have?
-            // Problem: we want to change highlighting per leg loop.
-
-            // Let's implement basic shapes
-            if (isStart) {
-              // Triangle
-              const size = r * 1.2;
-              // Points for triangle centered at cx, cy
-              // This is rough approximation of the ControlRenderer logic
-              const p1 = { x: c.x, y: c.y - size };
-              const p2 = { x: c.x - size * 0.866, y: c.y + size * 0.5 };
-              const p3 = { x: c.x + size * 0.866, y: c.y + size * 0.5 };
-              svgContent += `<polygon points="${p1.x},${p1.y} ${p2.x},${p2.y} ${p3.x},${p3.y}" fill="none" stroke="${color}" stroke-width="3" />`;
-            } else if (isFinish) {
-              // Double circle
-              svgContent += `<circle cx="${c.x}" cy="${c.y}" r="${r}" fill="none" stroke="${color}" stroke-width="3" />`;
-              svgContent += `<circle cx="${c.x}" cy="${c.y}" r="${
-                r * 0.7
-              }" fill="none" stroke="${color}" stroke-width="2" />`;
-            } else {
-              svgContent += `<circle cx="${c.x}" cy="${c.y}" r="${r}" fill="none" stroke="${color}" stroke-width="3" />`;
-            }
-
-            // Label
-            // Only number for regular controls
-            if (!isStart && !isFinish) {
-              svgContent += `<text x="${c.x + r + 2}" y="${
-                c.y + r + 2
-              }" font-family="Arial" font-size="14" fill="${color}" font-weight="bold">${svgControlLabels[idx] || idx}</text>`;
-            }
-          });
-
-          // 3. Best Route
-          if (bestRoute && bestRoute.path.length > 0) {
-            const routeColor = ROUTE_COLORS[0];
-            const polylineSegments = buildRoutePathSegments(
-              bestRoute.path,
-              (id) => findNodePx(id),
-              (fromId, toId) =>
-                !!edges.find(
-                  (e) => (e.from === fromId && e.to === toId) || (!e.oneWay && e.from === toId && e.to === fromId),
-                )?.ignoreLength,
-            );
-
-            polylineSegments
-              .filter((seg) => !seg.isMapSegmentTransition && seg.points.length >= 2)
-              .forEach((seg) => {
-                const pts = seg.points.map((p) => `${p.x},${p.y}`).join(" ");
-                svgContent += `<polyline points="${pts}" stroke="${routeColor}" stroke-width="4" opacity="0.8" stroke-linecap="round" stroke-linejoin="round" fill="none" />`;
-              });
-          }
-
-          svgContent += `</svg>`;
-
-          await drawSvgToCanvas(svgContent);
-
-          // Add to PDF
-          if (pageIndex > 0) pdf.addPage([canvas.width, canvas.height], canvas.width > canvas.height ? "l" : "p");
-
-          pdf.addImage(combinedCanvas.toDataURL("image/png"), "PNG", 0, 0, canvas.width, canvas.height);
-
-          // Add title text to page
-          const fromControl = controls.find((c) => c.id === fromId);
-          const toControl = controls.find((c) => c.id === toId);
-          const title = `Leg ${pageIndex + 1}: ${fromControl?.id || "?"} -> ${toControl?.id || "?"}`;
-
-          pdf.setFontSize(24);
-          pdf.text(title, 50, 50);
-          pageIndex++;
-        }
-
-        if (signal?.aborted) throw new Error("Export cancelled");
-        pdf.save(`route-analysis-${selectedCourseId}-all-legs.pdf`);
       },
       exportVideo: async (
         settings: VideoExportSettings, 
@@ -782,7 +589,7 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
         } catch (err) {
             if (abortSignal?.aborted) return;
             console.error("Export failed", err);
-            alert("Video export failed: " + (err instanceof Error ? err.message : String(err)));
+            notify("Video export failed: " + (err instanceof Error ? err.message : String(err)), { kind: "error" });
         } finally {
             accumulatedTimeRef.current = originalTime;
             isExportingRef.current = false;
@@ -1071,18 +878,8 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
       };
     }, [selectedLeg, selectedCourseId, selectedEvent, controls, raceCourse?.courses]);
 
-    const routeAnalyzer = useMemo(() => {
-      if (controls.length === 0) return null;
-      const polygons = selectedEvent?.raceCourses?.[0]?.polygons || [];
-      return new RouteAnalyzer(
-        controls,
-        nodes,
-        edges,
-        scale,
-        undefined, // Use default scoring model
-        polygons
-      );
-    }, [controls, nodes, edges, scale, selectedEvent]);
+    const eventRouteAnalyzer = useEventRouteAnalyzer(selectedEvent, { courseId: selectedCourseId });
+    const routeAnalyzer = controls.length === 0 ? null : eventRouteAnalyzer;
 
     const routes = useMemo(() => {
       // Wait for routes computed by the main route analysis
@@ -1233,6 +1030,15 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
             <rect x={0} y={0} width={state.pdfDimensions.width} height={state.pdfDimensions.height} fill="white" />
           )}
 
+          {/* Course directions (Directions view) under the routes */}
+          {renderDirections({
+            features: directions,
+            toPx: (p) => eventPosToMultiPagePixels(p, map, state.pixelsPerMM),
+            pixelsPerMM: state.pixelsPerMM,
+            mapScale: map?.scale,
+              idPrefix: "route-analysis-op",
+          })}
+
           <GraphOverlay
             edges={edges}
             nodes={Array.from(nodePxMap.values()).map(n => ({ id: n.id, x: n.x, y: n.y }))}
@@ -1265,12 +1071,12 @@ const RouteAnalysisMapViewer = forwardRef<RouteAnalysisMapViewerHandle, RouteAna
                 showLabel: true,
                 maybeGlow: "url(#white-halo-route)",
                 controlLabelMap,
-                showControlPoint: map?.showControlPoints,
+                showControlPoint: showControlPoints,
               }),
             )}
 
           {displayedRoutes.map((route, routeIndex) => {
-            const strokeWidth = routeIndex === 0 ? 10 : 8;
+            const strokeWidth = routeIndex === 0 ? PRIMARY_ROUTE_STROKE_WIDTH : ALTERNATIVE_ROUTE_STROKE_WIDTH;
             const lineThickness = strokeWidth / 2;
             const arrowSize = routeIndex === 0 ? 2.2 : 2.0;
             const lineOpacity = 1;

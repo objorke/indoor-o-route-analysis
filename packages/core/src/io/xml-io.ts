@@ -4,6 +4,7 @@
  */
 
 import type { EventData, RaceCourseData } from "../models/event";
+import { edgeLengthOverride } from "../models/graph";
 
 /**
  * Escape special XML characters
@@ -28,6 +29,8 @@ export function exportEventToIOFXML(event: EventData): string {
   const controls = raceCourse.controls || [];
   const vertices = raceCourse.vertices || [];
   const edges = raceCourse.edges || [];
+  const polygons = raceCourse.polygons || [];
+  const directions = raceCourse.directions || [];
 
   const mapScale = raceCourse.maps?.[0]?.scale;
   const eventDate = event.startTime.date;
@@ -87,7 +90,14 @@ export function exportEventToIOFXML(event: EventData): string {
         const ctrlText = cc.controlId || "";
         xml += `        <Control>${escapeXml(ctrlText)}</Control>\n`;
         if (cc.mapText !== undefined) {
-          xml += `        <MapText>${cc.mapText}</MapText>\n`;
+          xml += `        <MapText>${escapeXml(cc.mapText)}</MapText>\n`;
+        }
+        // IOF XML 3.0 has no map exchange element; use the schema's Extensions
+        // container (must be the last child of CourseControl).
+        if (cc.mapExchange) {
+          xml += `        <Extensions>\n`;
+          xml += `          <x:MapExchange type="${cc.mapExchange}" />\n`;
+          xml += `        </Extensions>\n`;
         }
         xml += `      </CourseControl>\n`;
       });
@@ -119,9 +129,47 @@ export function exportEventToIOFXML(event: EventData): string {
       if (typeof e.oneWay === "boolean") attrs.push(`oneWay="${e.oneWay ? "true" : "false"}"`);
       if (typeof e.ignoreLength === "boolean") attrs.push(`teleport="${e.ignoreLength ? "true" : "false"}"`); // legacy name mapping
       if (e.reverseLabel) attrs.push(`reverseLabel="${escapeXml(e.reverseLabel)}"`);
+      if (edgeLengthOverride(e) !== undefined) attrs.push(`length="${e.length}"`);
       xml += `      <x:Edge ${attrs.join(" ")} />\n`;
     });
     xml += `    </x:Routes>\n`;
+  }
+
+  // Extension: Polygons (floor outlines: level, elevation and 3D origin; used for stairs/levels)
+  if (polygons.length > 0) {
+    const pts = (ps: { x: number; y: number }[]) => ps.map((p) => `${p.x},${p.y}`).join(" ");
+    xml += `    <x:Polygons>\n`;
+    polygons.forEach((poly) => {
+      const attrs = [`id="${escapeXml(poly.id)}"`, `level="${poly.level}"`];
+      if (typeof poly.elevation === "number") attrs.push(`elevation="${poly.elevation}"`);
+      if (poly.origin) attrs.push(`originX="${poly.origin.x}"`, `originY="${poly.origin.y}"`);
+      xml += `      <x:Polygon ${attrs.join(" ")}>\n`;
+      xml += `        <x:Points>${pts(poly.points)}</x:Points>\n`;
+      (poly.holes ?? []).forEach((hole) => {
+        xml += `        <x:Hole>${pts(hole)}</x:Hole>\n`;
+      });
+      xml += `      </x:Polygon>\n`;
+    });
+    xml += `    </x:Polygons>\n`;
+  }
+
+  // Extension: Directions (course direction symbols, see docs/directions.md)
+  if (directions.length > 0) {
+    const pts = (ps: { x: number; y: number }[]) => ps.map((p) => `${p.x},${p.y}`).join(" ");
+    xml += `    <x:Directions>\n`;
+    directions.forEach((f) => {
+      const attrs = [`id="${escapeXml(f.id)}"`, `kind="${escapeXml(f.kind)}"`];
+      if ("position" in f) {
+        attrs.push(`x="${f.position.x}"`, `y="${f.position.y}"`, `rotation="${f.rotation}"`);
+        xml += `      <x:Symbol ${attrs.join(" ")} />\n`;
+        return;
+      }
+      if (f.kind === "one-way") attrs.push(`style="${f.style}"`);
+      if (f.kind === "oob-area" && f.outline === false) attrs.push(`outline="false"`);
+      if ("closed" in f && f.closed) attrs.push(`closed="true"`);
+      xml += `      <x:Symbol ${attrs.join(" ")}><x:Points>${pts(f.points)}</x:Points></x:Symbol>\n`;
+    });
+    xml += `    </x:Directions>\n`;
   }
 
   xml += `  </RaceCourseData>\n`;

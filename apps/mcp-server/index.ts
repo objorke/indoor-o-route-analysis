@@ -10,7 +10,7 @@ import {
 import * as fs from "fs";
 import * as path from "path";
 import { parseEventFromJSON } from "@indoor-o-route-analysis/core";
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer, getEventScoringModel } from "@indoor-o-route-analysis/core";
 import { analyzeCourseLegs } from "@indoor-o-route-analysis/core";
 import { ScoringModelRegistry } from "@indoor-o-route-analysis/core";
 import type { EventData } from "@indoor-o-route-analysis/core";
@@ -489,8 +489,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const controls = raceCourse?.controls || [];
         const nodes = raceCourse?.vertices || [];
         const edges = raceCourse?.edges || [];
-        const polygons = raceCourse?.polygons || [];
-        const mapScale = raceCourse?.maps?.[0]?.scale || 1000;
 
         const fromControl = controls.find((c) => c.id === fromControlCode);
         const toControl = controls.find((c) => c.id === toControlCode);
@@ -517,15 +515,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        const scoringModel = ScoringModelRegistry.getDefaultModel();
-        const analyzer = new RouteAnalyzer(
-          controls,
-          nodes,
-          edges,
-          mapScale,
-          scoringModel,
-          polygons
-        );
+        const scoringModel = getEventScoringModel(currentEvent);
+        const analyzer = createEventRouteAnalyzer(currentEvent, { scoringModel });
 
         const routes = analyzer.findAlternativePathsBetweenControls(
           fromControl.id,
@@ -575,8 +566,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const controls = raceCourse?.controls || [];
         const nodes = raceCourse?.vertices || [];
         const edges = raceCourse?.edges || [];
-        const polygons = raceCourse?.polygons || [];
-        const mapScale = raceCourse?.maps?.[0]?.scale || 1000;
 
         const fromControl = controls.find((c) => c.id === fromControlCode);
         const toControl = controls.find((c) => c.id === toControlCode);
@@ -603,8 +592,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        const scoringModel = ScoringModelRegistry.getDefaultModel();
-        const analyzer = new RouteAnalyzer(controls, nodes, edges, mapScale, scoringModel, polygons);
+        const scoringModel = getEventScoringModel(currentEvent);
+        const analyzer = createEventRouteAnalyzer(currentEvent, { scoringModel });
 
         const humanResult = analyzer.findHumanRouteWithTrace(fromControl.id, toControl.id);
         if (!humanResult) {
@@ -612,7 +601,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             content: [
               {
                 type: "text",
-                text: `❌ No human route found between ${fromControlCode} and ${toControlCode}. The human-route model is tuned for course-leg-scale distances, not arbitrary long-distance queries — try analyze_shortest_route instead for those.`,
+                text: `❌ No human route found between ${fromControlCode} and ${toControlCode}. No route exists between these controls — check with analyze_shortest_route.`,
               },
             ],
           };
@@ -630,7 +619,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
                 toLabel: toControlCode,
                 resolveNode: (id) => controls.find((c) => c.id === id) ?? nodes.find((n) => n.id === id) ?? null,
                 getCoordinates,
-                polygons,
+                polygons: raceCourse?.polygons || [],
               })
             : undefined;
 
@@ -678,8 +667,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const controls = raceCourse?.controls || [];
         const nodes = raceCourse?.vertices || [];
         const edges = raceCourse?.edges || [];
-        const polygons = raceCourse?.polygons || [];
-        const mapScale = raceCourse?.maps?.[0]?.scale || 1000;
 
         const course = courses.find((c) => c.name === courseName);
         if (!course) {
@@ -693,7 +680,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           };
         }
 
-        let scoringModel = ScoringModelRegistry.getDefaultModel();
+        let scoringModel = getEventScoringModel(currentEvent);
         if (scoringModelId) {
           const model = ScoringModelRegistry.getModel(scoringModelId);
           if (model) {
@@ -712,14 +699,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           }
         }
 
-        const analyzer = new RouteAnalyzer(
-          controls,
-          nodes,
-          edges,
-          mapScale,
-          scoringModel,
-          polygons
-        );
+        const analyzer = createEventRouteAnalyzer(currentEvent, { scoringModel });
 
         const { legs } = analyzeCourseLegs(course, currentEvent, analyzer, false);
 

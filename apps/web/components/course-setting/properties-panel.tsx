@@ -4,16 +4,19 @@ import { useEffect, useMemo, useState, useRef } from "react";
 import { useAppData } from "@indoor-o-route-analysis/ui"
 import { getCourseControlLabels } from "@indoor-o-route-analysis/core";
 import { Button } from "@indoor-o-route-analysis/ui"
-import { Input } from "@indoor-o-route-analysis/ui"
+import { Input, NumericInput } from "@indoor-o-route-analysis/ui"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@indoor-o-route-analysis/ui"
+import { Progress } from "@indoor-o-route-analysis/ui";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@indoor-o-route-analysis/ui";
-import { Trash2, Plus, ArrowUp, ArrowDown, Info, Palette, Lightbulb, Link, AlertCircle, Target, Pencil, Check, X } from "lucide-react";
+import { Trash2, Plus, ArrowUp, ArrowDown, Info, Palette, Lightbulb, Link, AlertCircle, Target, Pencil, Check, X, Loader2, Triangle } from "lucide-react";
 import { MapVisibilityToggle } from "@/components/map-visibility-toggle";
 import CourseSettingInfoDialog from "./info-dialog";
 import { GenerateCourseDialog } from "./generate-course-dialog";
 import { NextControlsList } from "./next-controls-list";
 import { isControlIdUnique, updateControlIdInControls, updateControlIdInCourses, updateControlIdInGraph } from "@indoor-o-route-analysis/core";
-import type { Control } from "@indoor-o-route-analysis/core";
+import type { Control, CourseControl } from "@indoor-o-route-analysis/core";
+import { nextMapExchange, MAP_EXCHANGE_LABELS, removeControl, updateRaceCourse, type RaceCourseData } from "@indoor-o-route-analysis/core";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 // Global keydown listener removed to avoid conflict with control code editing
 // If level shortcuts are needed, they should be re-implemented with a non-conflicting modifier (e.g. Alt+Number)
@@ -33,6 +36,8 @@ interface PropertiesPanelProps {
   onMuteChange?: (muted: boolean) => void;
   showDifficultyColors?: boolean;
   onShowDifficultyColorsChange?: (show: boolean) => void;
+  /** Progress of the running difficulty-color calculation, or null when idle. */
+  difficultyProgress?: { done: number; total: number } | null;
   autoAddToCourse?: boolean;
   onAutoAddToCourseChange?: (autoAdd: boolean) => void;
 }
@@ -52,6 +57,7 @@ export default function CourseSettingPropertiesPanel({
   onMuteChange,
   showDifficultyColors = false,
   onShowDifficultyColorsChange,
+  difficultyProgress = null,
   autoAddToCourse = false,
   onAutoAddToCourseChange,
 }: PropertiesPanelProps) {
@@ -61,8 +67,16 @@ export default function CourseSettingPropertiesPanel({
     setSelectedCourseId: contextSetSelectedCourseId,
     selectedControlId: contextSelectedControlId,
     setSelectedControlId: contextSetSelectedControlId,
-    updateEventData,
+    updateEvent,
   } = useAppData();
+
+  /** Apply `fn` to the first race course of the latest event (never a render-time copy). */
+  const updateLatestRaceCourse = (fn: (rc: RaceCourseData) => RaceCourseData, label?: string) =>
+    selectedEvent ? updateEvent(selectedEvent.id, (e) => updateRaceCourse(e, fn), undefined, { label }) : Promise.resolve();
+  /** Update one control by id in the latest event. */
+  const updateControl = (id: string, fn: (c: Control) => Control, label = "Edit control") =>
+    updateLatestRaceCourse((rc) => ({ ...rc, controls: (rc.controls ?? []).map((c) => (c.id === id ? fn(c) : c)) }), label);
+
 
   // Use external course ID if provided, otherwise use context
   const selectedCourseId = externalSelectedCourseId ?? contextSelectedCourseId;
@@ -89,20 +103,10 @@ export default function CourseSettingPropertiesPanel({
     return async (newProps: Partial<Control>) => {
       if (!selectedControlId || !selectedEvent || !raceCourse) return;
 
-      const updatedControls = (raceCourse.controls ?? []).map((c) => {
-        if (c.id === selectedControlId) {
-          return { ...c, ...newProps };
-        }
-        return c;
-      });
-
-      const raceCourses = selectedEvent.raceCourses ?? [];
-      const updatedRaceCourses = [...raceCourses];
-      updatedRaceCourses[0] = { ...raceCourse, controls: updatedControls };
-
-      await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+      await updateControl(selectedControlId, (c) => ({ ...c, ...newProps }));
     };
-  }, [propOnPropertiesChange, selectedControlId, selectedEvent, raceCourse, updateEventData]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- updateControl is recreated each render but only closes over selectedEvent/updateEvent
+  }, [propOnPropertiesChange, selectedControlId, selectedEvent, raceCourse, updateEvent]);
 
   const [editingCodeIndex, setEditingCodeIndex] = useState<number | null>(null);
   const [editingCodeValue, setEditingCodeValue] = useState("");
@@ -125,36 +129,24 @@ export default function CourseSettingPropertiesPanel({
 
     if (!isControlIdUnique(tempControlId, raceCourse.controls || [], selectedControl.id)) {
       // Simple alert for now, can be improved
-      alert("Control Code must be unique.");
+      notify("Control Code must be unique.");
       setTempControlId(selectedControl.id); // Revert
       return;
     }
 
-    const updatedControls = updateControlIdInControls(raceCourse.controls || [], selectedControl.id, tempControlId);
-    const updatedCourses = updateControlIdInCourses(raceCourse.courses || [], selectedControl.id, tempControlId);
-
-    // Update graph nodes and edges
-    const currentNodes = raceCourse.vertices || [];
-    const currentEdges = raceCourse.edges || [];
-    const { nodes: updatedNodes, edges: updatedEdges } = updateControlIdInGraph(
-      currentNodes,
-      currentEdges,
-      selectedControl.id,
-      tempControlId
-    );
-
-    const raceCourses = selectedEvent.raceCourses ?? [];
-    const updatedRaceCourses = [...raceCourses];
-    updatedRaceCourses[0] = {
-      ...raceCourse,
-      controls: updatedControls,
-      courses: updatedCourses,
-      vertices: updatedNodes,
-      edges: updatedEdges,
-    };
-
-    await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
-    setSelectedControlId(tempControlId);
+    const oldId = selectedControl.id;
+    const newId = tempControlId;
+    await updateLatestRaceCourse((rc) => {
+      const graph = updateControlIdInGraph(rc.vertices || [], rc.edges || [], oldId, newId);
+      return {
+        ...rc,
+        controls: updateControlIdInControls(rc.controls || [], oldId, newId),
+        courses: updateControlIdInCourses(rc.courses || [], oldId, newId),
+        vertices: graph.nodes,
+        edges: graph.edges,
+      };
+    }, "Rename control");
+    setSelectedControlId(newId);
   };
 
   // Listen for key presses to set control code when a control is selected
@@ -236,20 +228,66 @@ export default function CourseSettingPropertiesPanel({
     }
   }, [currentCourses, selectedCourseId, setSelectedCourseId]);
 
-  const updateCourseControlIds = async (ids: string[]) => {
+  /** Replace the selected course's control entries (keeps per-entry fields like mapText/mapExchange). */
+  const updateCourseControls = async (entries: CourseControl[]) => {
     if (!selectedEvent || !selectedCourseId || !raceCourse) return;
 
-    const updatedCourses = (raceCourse.courses ?? []).map((c) => ({
-      ...c,
-      controls: c.id === selectedCourseId ? ids.map((id) => ({ controlId: id })) : (c.controls ?? []),
-    }));
-
-    const raceCourses = selectedEvent.raceCourses ?? [];
-    const updatedRaceCourses = [...raceCourses];
-    updatedRaceCourses[0] = { ...raceCourse, courses: updatedCourses };
-
-    await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+    const courseId = selectedCourseId;
+    await updateLatestRaceCourse((rc) => ({
+      ...rc,
+      courses: (rc.courses ?? []).map((c) => (c.id === courseId ? { ...c, controls: entries } : c)),
+    }), "Edit course");
   };
+
+  const courseEntries = useMemo(() => currentCourse?.controls ?? [], [currentCourse]);
+
+  const setCourseControlCode = (idx: number, code: string) => {
+    const entries = [...courseEntries];
+    entries[idx] = { ...entries[idx], controlId: code };
+    updateCourseControls(entries);
+  };
+
+  const swapCourseControls = (a: number, b: number) => {
+    const entries = [...courseEntries];
+    [entries[a], entries[b]] = [entries[b], entries[a]];
+    updateCourseControls(entries);
+  };
+
+  const removeCourseControl = (idx: number) => {
+    updateCourseControls(courseEntries.filter((_, i) => i !== idx));
+  };
+
+  /** Cycle the map exchange at a course entry: none → map change → map flip → none. */
+  const cycleMapExchange = (idx: number) => {
+    const entries = [...courseEntries];
+    const next = nextMapExchange(entries[idx]?.mapExchange);
+    const { mapExchange: _old, ...rest } = entries[idx];
+    entries[idx] = next ? { ...rest, mapExchange: next } : rest;
+    updateCourseControls(entries);
+  };
+
+  /** Map exchange is only meaningful on ordinary controls that are not the last in the course. */
+  const canHaveMapExchange = (idx: number) => {
+    const ctrl = controls.find((c) => c.id === courseEntries[idx]?.controlId);
+    return (ctrl?.type ?? "control") === "control" && idx < courseEntries.length - 1;
+  };
+
+  // Shortcut: M cycles the map exchange at the selected control (first occurrence in the course).
+  useEffect(() => {
+    if (!selectedControlId || !selectedCourseId) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
+      if (e.key.toUpperCase() !== "M") return;
+      const idx = courseEntries.findIndex((cc) => cc.controlId === selectedControlId);
+      if (idx < 0 || !canHaveMapExchange(idx)) return;
+      e.preventDefault();
+      cycleMapExchange(idx);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  });
 
   const [isEditingCourseName, setIsEditingCourseName] = useState(false);
   const [courseNameInput, setCourseNameInput] = useState("");
@@ -265,16 +303,12 @@ export default function CourseSettingPropertiesPanel({
   const handleSaveCourseName = async () => {
     if (!selectedEvent || !selectedCourseId || !raceCourse) return;
     
-    // Optimistic update
-    const updatedCourses = (raceCourse.courses ?? []).map(c => 
-        c.id === selectedCourseId ? { ...c, name: courseNameInput } : c
-    );
-
-    const raceCourses = selectedEvent.raceCourses ?? [];
-    const updatedRaceCourses = [...raceCourses];
-    updatedRaceCourses[0] = { ...raceCourse, courses: updatedCourses };
-
-    await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+    const courseId = selectedCourseId;
+    const name = courseNameInput;
+    await updateLatestRaceCourse((rc) => ({
+      ...rc,
+      courses: (rc.courses ?? []).map((c) => (c.id === courseId ? { ...c, name } : c)),
+    }), "Rename course");
     setIsEditingCourseName(false);
   };
 
@@ -299,18 +333,35 @@ export default function CourseSettingPropertiesPanel({
       }
     };
 
-    const updatedCourses = [...(raceCourse.courses ?? []), newCourse];
-    
-    const raceCourses = selectedEvent.raceCourses ?? [];
-    const updatedRaceCourses = [...raceCourses];
-    updatedRaceCourses[0] = { ...raceCourse, courses: updatedCourses };
-
-    await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+    await updateLatestRaceCourse((rc) => ({ ...rc, courses: [...(rc.courses ?? []), newCourse] }), "New course");
     setSelectedCourseId(newCourseId);
+  };
+
+  const renderDifficultyProgress = () => {
+    if (!difficultyProgress) return null;
+    const pct = difficultyProgress.total > 0 ? Math.round((difficultyProgress.done / difficultyProgress.total) * 100) : 0;
+    return (
+      <div className="flex items-center gap-2 px-2 py-1 border-b border-border bg-card text-xs text-muted-foreground">
+        <Loader2 className="h-3 w-3 animate-spin shrink-0" />
+        <span className="whitespace-nowrap">Coloring by difficulty</span>
+        <Progress value={pct} className="h-1 flex-1" />
+        <span className="font-mono tabular-nums">{difficultyProgress.done}/{difficultyProgress.total}</span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-5 w-5"
+          title="Stop calculating and hide difficulty colors"
+          onClick={() => onShowDifficultyColorsChange?.(false)}
+        >
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+    );
   };
 
   const renderToolbar = () => {
     return (
+    <>
     <div className="flex items-center justify-between px-2 border-b border-border bg-card h-8">
       <div className="flex items-center gap-1">
         <MapVisibilityToggle
@@ -329,12 +380,14 @@ export default function CourseSettingPropertiesPanel({
                 onClick={() => onShowDifficultyColorsChange?.(!showDifficultyColors)}
                 disabled={!selectedCourseId}
               >
-                <Palette className="h-4 w-4" />
+                {difficultyProgress ? <Loader2 className="h-4 w-4 animate-spin" /> : <Palette className="h-4 w-4" />}
               </Button>
             </TooltipTrigger>
             <TooltipContent>
-              {showDifficultyColors 
-                ? "Hide the difficulty-based coloring of available controls." 
+              {difficultyProgress
+                ? "Calculating difficulties… click to stop and hide the coloring."
+                : showDifficultyColors
+                ? "Hide the difficulty-based coloring of available controls."
                 : "Color available controls based on the difficulty of the leg to reach them."}
             </TooltipContent>
           </Tooltip>
@@ -379,6 +432,37 @@ export default function CourseSettingPropertiesPanel({
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
+        {(() => {
+          // Map exchange (change/flip) for the selected control in the current course
+          const mxIdx = selectedControlId ? courseEntries.findIndex((cc) => cc.controlId === selectedControlId) : -1;
+          const mxEnabled = mxIdx >= 0 && canHaveMapExchange(mxIdx);
+          const mx = mxEnabled ? courseEntries[mxIdx]?.mapExchange : undefined;
+          const nextMx = nextMapExchange(mx);
+          return (
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      variant={mx ? "active" : "ghost"}
+                      size="icon"
+                      className="h-7 w-7"
+                      onClick={() => cycleMapExchange(mxIdx)}
+                      disabled={!mxEnabled}
+                    >
+                      <Triangle className="h-4 w-4" />
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {mxEnabled
+                    ? `Map exchange at control ${selectedControlId}: ${mx ? MAP_EXCHANGE_LABELS[mx].toLowerCase() : "none"}. Click to set ${nextMx ? MAP_EXCHANGE_LABELS[nextMx].toLowerCase() : "none"} (M).`
+                    : "Map exchange (change/flip): select a control in the current course (not the start, finish or last control) (M)."}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          );
+        })()}
       </div>
       <div className="flex items-center gap-1">
         <TooltipProvider>
@@ -399,6 +483,8 @@ export default function CourseSettingPropertiesPanel({
         {/* Hamburger menu */}
       </div>
     </div>
+    {renderDifficultyProgress()}
+    </>
   );
   };
 
@@ -528,16 +614,12 @@ export default function CourseSettingPropertiesPanel({
                                               onChange={(e) => setEditingCodeValue(e.target.value)}
                                               onClick={(e) => e.stopPropagation()}
                                               onBlur={() => {
-                                                const newIds = [...courseControlIds];
-                                                newIds[idx] = editingCodeValue;
-                                                updateCourseControlIds(newIds);
+                                                setCourseControlCode(idx, editingCodeValue);
                                                 setEditingCodeIndex(null);
                                               }}
                                               onKeyDown={(e) => {
                                                 if (e.key === "Enter") {
-                                                  const newIds = [...courseControlIds];
-                                                  newIds[idx] = editingCodeValue;
-                                                  updateCourseControlIds(newIds);
+                                                  setCourseControlCode(idx, editingCodeValue);
                                                   setEditingCodeIndex(null);
                                                 } else if (e.key === "Escape") {
                                                   setEditingCodeIndex(null);
@@ -560,6 +642,14 @@ export default function CourseSettingPropertiesPanel({
                                               >
                                                 {control?.id}
                                               </span>
+                                              {courseEntries[idx]?.mapExchange && (
+                                                <span
+                                                  className="ml-1 px-1 rounded bg-primary/20 text-primary text-[9px] font-sans uppercase"
+                                                  title={MAP_EXCHANGE_LABELS[courseEntries[idx].mapExchange!]}
+                                                >
+                                                  {courseEntries[idx].mapExchange}
+                                                </span>
+                                              )}
                                               {isMissing && (
                                                 <div title="Control not found in event" className="ml-1">
                                                   <AlertCircle className="w-3 h-3 text-red-500" />
@@ -572,13 +662,27 @@ export default function CourseSettingPropertiesPanel({
                                           {/* Level display removed */}
                                         </td>
                                         <td className="px-2 py-1 text-right space-x-1 flex justify-end">
+                                          {canHaveMapExchange(idx) && (() => {
+                                            const mx = courseEntries[idx]?.mapExchange;
+                                            const nextMx = nextMapExchange(mx);
+                                            return (
+                                              <button
+                                                onClick={(e) => {
+                                                  e.stopPropagation();
+                                                  cycleMapExchange(idx);
+                                                }}
+                                                className={`p-0.5 hover:bg-muted rounded ${mx ? "text-primary" : "text-muted-foreground hover:text-foreground"}`}
+                                                title={`Map exchange: ${mx ? MAP_EXCHANGE_LABELS[mx] : "none"}. Click to set ${nextMx ? MAP_EXCHANGE_LABELS[nextMx].toLowerCase() : "none"} (M)`}
+                                              >
+                                                <Triangle className="w-3 h-3" />
+                                              </button>
+                                            );
+                                          })()}
                                           {idx > 0 && (
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                const newIds = [...courseControlIds];
-                                                [newIds[idx], newIds[idx - 1]] = [newIds[idx - 1], newIds[idx]];
-                                                updateCourseControlIds(newIds);
+                                                swapCourseControls(idx, idx - 1);
                                               }}
                                               className="p-0.5 hover:bg-muted rounded"
                                               title="Move up"
@@ -590,9 +694,7 @@ export default function CourseSettingPropertiesPanel({
                                             <button
                                               onClick={(e) => {
                                                 e.stopPropagation();
-                                                const newIds = [...courseControlIds];
-                                                [newIds[idx], newIds[idx + 1]] = [newIds[idx + 1], newIds[idx]];
-                                                updateCourseControlIds(newIds);
+                                                swapCourseControls(idx, idx + 1);
                                               }}
                                               className="p-0.5 hover:bg-muted rounded"
                                               title="Move down"
@@ -603,8 +705,7 @@ export default function CourseSettingPropertiesPanel({
                                           <button
                                             onClick={(e) => {
                                               e.stopPropagation();
-                                              const newIds = courseControlIds.filter((_, i) => i !== idx);
-                                              updateCourseControlIds(newIds);
+                                              removeCourseControl(idx);
                                             }}
                                             className="p-0.5 hover:bg-destructive hover:bg-opacity-10 hover:text-destructive rounded"
                                             title="Remove from course"
@@ -627,12 +728,9 @@ export default function CourseSettingPropertiesPanel({
 
                 {showSuggestions && suggestionProps && (
                   <NextControlsList
+                    event={selectedEvent}
+                    courseId={selectedCourseId}
                     lastControlId={suggestionProps.lastControlId}
-                    controls={raceCourse?.controls ?? []}
-                    nodes={raceCourse?.vertices ?? []}
-                    edges={raceCourse?.edges ?? []}
-                    mapScale={raceCourse?.maps?.[0]?.scale ?? 1500}
-                    scoringModelId={selectedEvent?.difficultyScoringModel}
                     excludeControlIds={suggestionProps.excludeControlIds}
                     onNavigateTo={(id) => setSelectedControlId(id)}
                     onAddToCourse={(code) => onAddControlToCourse?.(code)}
@@ -684,13 +782,7 @@ export default function CourseSettingPropertiesPanel({
                 <Select
                   value={selectedControl.type}
                   onValueChange={(value) => {
-                    const updatedControls = (raceCourse?.controls ?? []).map((c) =>
-                      c.id === selectedControl.id ? { ...c, type: value as Control["type"] } : c,
-                    );
-                    const raceCourses = selectedEvent?.raceCourses ?? [];
-                    const updatedRaceCourses = [...raceCourses];
-                    updatedRaceCourses[0] = { ...raceCourse!, controls: updatedControls };
-                    updateEventData(selectedEvent!.id, { raceCourses: updatedRaceCourses });
+                    void updateControl(selectedControl.id, (c) => ({ ...c, type: value as Control["type"] }));
                   }}
                 >
                   <SelectTrigger className="w-24 text-sm">
@@ -705,39 +797,25 @@ export default function CourseSettingPropertiesPanel({
               </div>
 
               <div className="grid grid-cols-2 gap-2">
-                <Input
+                <NumericInput
                   title="X coordinate (mm)"
-                  type="number"
+                  aria-label="X coordinate (mm)"
+                  decimals={2}
                   value={selectedControl.mapPosition.x}
-                  onChange={(e) => {
-                    const updatedControls = (raceCourse?.controls ?? []).map((c) =>
-                      c.id === selectedControl.id
-                        ? { ...c, mapPosition: { ...c.mapPosition, x: parseInt(e.target.value) || 0 } }
-                        : c,
-                    );
-                    const raceCourses = selectedEvent?.raceCourses ?? [];
-                    const updatedRaceCourses = [...raceCourses];
-                    updatedRaceCourses[0] = { ...raceCourse!, controls: updatedControls };
-                    updateEventData(selectedEvent!.id, { raceCourses: updatedRaceCourses });
-                  }}
+                  onCommit={(v) =>
+                    void updateControl(selectedControl.id, (c) => ({ ...c, mapPosition: { ...c.mapPosition, x: v } }))
+                  }
                   className="text-sm"
                   placeholder="X (mm)"
                 />
-                <Input
+                <NumericInput
                   title="Y coordinate (mm)"
-                  type="number"
+                  aria-label="Y coordinate (mm)"
+                  decimals={2}
                   value={selectedControl.mapPosition.y}
-                  onChange={(e) => {
-                    const updatedControls = (raceCourse?.controls ?? []).map((c) =>
-                      c.id === selectedControl.id
-                        ? { ...c, mapPosition: { ...c.mapPosition, y: parseInt(e.target.value) || 0 } }
-                        : c,
-                    );
-                    const raceCourses = selectedEvent?.raceCourses ?? [];
-                    const updatedRaceCourses = [...raceCourses];
-                    updatedRaceCourses[0] = { ...raceCourse!, controls: updatedControls };
-                    updateEventData(selectedEvent!.id, { raceCourses: updatedRaceCourses });
-                  }}
+                  onCommit={(v) =>
+                    void updateControl(selectedControl.id, (c) => ({ ...c, mapPosition: { ...c.mapPosition, y: v } }))
+                  }
                   className="text-sm"
                   placeholder="Y (mm)"
                 />
@@ -762,11 +840,8 @@ export default function CourseSettingPropertiesPanel({
                   variant="destructive"
                   size="sm"
                   onClick={() => {
-                    const updatedControls = (raceCourse?.controls ?? []).filter((c) => c.id !== selectedControl.id);
-                    const raceCourses = selectedEvent?.raceCourses ?? [];
-                    const updatedRaceCourses = [...raceCourses];
-                    updatedRaceCourses[0] = { ...raceCourse!, controls: updatedControls };
-                    updateEventData(selectedEvent!.id, { raceCourses: updatedRaceCourses });
+                    const id = selectedControl.id;
+                    void updateLatestRaceCourse((rc) => removeControl(rc, id), "Delete control");
                     setSelectedControlId(null);
                   }}
                 >

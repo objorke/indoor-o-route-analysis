@@ -9,6 +9,30 @@
 import type { HumanRouteResult } from "./route-analyzer";
 import { traceToFrames, type HumanRouteFrame } from "./human-route-frames";
 import type { HumanRouteLabelResolver } from "./human-route-labels";
+import { ONE_WAY_PASSAGE_LABEL } from "./human-route";
+
+const ONE_WAY_PASSAGE_NAME = "the one-way passage";
+
+/** A crossing as it reads in a sentence: "stair B", or "the one-way passage" for an unlabeled one-way seam. */
+function crossingName(label: string): string {
+  return label === ONE_WAY_PASSAGE_LABEL ? ONE_WAY_PASSAGE_NAME : `stair ${label}`;
+}
+
+/** The candidates of one glance as prose: "stairs A and B", "stair A and a one-way passage", "a one-way passage". */
+function describeCandidates(labels: string[]): string {
+  const stairs = labels.filter((label) => label !== ONE_WAY_PASSAGE_LABEL);
+  const passages = labels.length - stairs.length;
+  const parts: string[] = [];
+  if (stairs.length > 0) parts.push(`${stairs.length === 1 ? "stair" : "stairs"} ${joinWithAnd(stairs)}`);
+  if (passages === 1) parts.push("a one-way passage");
+  if (passages > 1) parts.push(`${passages} one-way passages`);
+  return parts.join(" and ");
+}
+
+/** What the human picks: the stair's label (as before), or the passage spelled out. */
+function chosenName(label: string): string {
+  return label === ONE_WAY_PASSAGE_LABEL ? ONE_WAY_PASSAGE_NAME : label;
+}
 
 export interface ExplanationMessage {
   /** Index into the frame sequence from traceToFrames — lets the UI sync playback and seek. */
@@ -56,7 +80,7 @@ function backtrackOrigin(frame: HumanRouteFrame, resolver?: HumanRouteLabelResol
   const floor = frame.cluster ? resolver?.floorLabelOf(frame.cluster) : undefined;
 
   if (chain && chain.length > 0) {
-    return `To get to stair ${chain[chain.length - 1]}${floor ? ` on ${floor}` : ""}`;
+    return `To get to ${crossingName(chain[chain.length - 1])}${floor ? ` on ${floor}` : ""}`;
   }
   if (controlNumber) return `To control ${controlNumber}${floor ? ` on ${floor}` : ""}`;
   if (floor) return `To ${floor}`;
@@ -83,8 +107,7 @@ function explainFrame(frame: HumanRouteFrame, frameIndex: number, resolver?: Hum
     case "exploration": {
       const candidates = frame.candidates ?? [];
       const top = candidates[0];
-      const stairWord = candidates.length === 1 ? "stair" : "stairs";
-      const stairList = joinWithAnd(candidates.map((c) => c.label));
+      const reachable = describeCandidates(candidates.map((c) => c.label));
       const currentLevel = frame.cluster ? resolver?.floorLevelOf(frame.cluster) : undefined;
 
       if (frame.side === "tracking") {
@@ -93,7 +116,7 @@ function explainFrame(frame: HumanRouteFrame, frameIndex: number, resolver?: Hum
         const dir = directionBetween(currentLevel, resolver?.floorLevelOf(top.toCluster));
         return {
           frameIndex,
-          text: `${origin}, we can reach ${stairWord} ${stairList}. Let us try${dir ? ` ${dir}` : ""} ${top.label}.`,
+          text: `${origin}, we can reach ${reachable}. Let us try${dir ? ` ${dir}` : ""} ${chosenName(top.label)}.`,
         };
       }
 
@@ -104,7 +127,7 @@ function explainFrame(frame: HumanRouteFrame, frameIndex: number, resolver?: Hum
       const candidateFloor = resolver?.floorLabelOf(top.toCluster);
       return {
         frameIndex,
-        text: `Backtracking: ${origin}, we can come from ${stairWord} ${stairList}. Let us try${executionDir ? ` ${executionDir}` : ""} ${top.label}${candidateFloor ? ` from ${candidateFloor}` : ""}.`,
+        text: `Backtracking: ${origin}, we can come from ${reachable}. Let us try${executionDir ? ` ${executionDir}` : ""} ${chosenName(top.label)}${candidateFloor ? ` from ${candidateFloor}` : ""}.`,
       };
     }
 
@@ -129,7 +152,7 @@ function explainFrame(frame: HumanRouteFrame, frameIndex: number, resolver?: Hum
       }
       return {
         frameIndex,
-        text: `That matches what I worked out from the control — so: ${labels.join(", ")}. That's the route. Go!`,
+        text: `That matches what I worked out from the control — so: ${labels.map(chosenName).join(", ")}. That's the route. Go!`,
       };
     }
 

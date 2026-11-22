@@ -18,6 +18,8 @@ import {
   addRecentFile,
   getRecentFiles,
   clearRecentFiles,
+  deleteDatabase,
+  clearAllUserData,
 } from "./indexeddb";
 import type { EventData } from "./models/event";
 
@@ -233,5 +235,29 @@ describe("recent files (localStorage-backed)", () => {
     await addRecentFile({ name: "a.xml" });
     await clearRecentFiles();
     expect(await getRecentFiles()).toEqual([]);
+  });
+});
+
+describe("deleteDatabase", () => {
+  it("removes all stored events and map files, and a fresh connection still works", async () => {
+    await saveEvent(makeEvent("e1"));
+    await saveMapFile("m1", new ArrayBuffer(8));
+    await deleteDatabase();
+    expect(await getAllEvents()).toEqual([]);
+    expect(await getMapFile("m1")).toBeUndefined();
+    await saveEvent(makeEvent("e2"));
+    expect((await getAllEvents()).map((e) => e.id)).toEqual(["e2"]);
+  });
+});
+
+describe("clearAllUserData", () => {
+  it("removes stored events and local/session storage", async () => {
+    await saveEvent(makeEvent("e1"));
+    localStorage.setItem("app-running-speed", "5");
+    sessionStorage.setItem("x", "1");
+    await clearAllUserData();
+    expect(await getAllEvents()).toEqual([]);
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
   });
 });

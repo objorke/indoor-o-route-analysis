@@ -1,7 +1,8 @@
 "use client"
 
-import { X, Maximize2, CheckCircle, Info, Menu, Download, Target, Box } from "lucide-react";
+import { X, Maximize2, CheckCircle, Info, Menu, Download, Target, Box, Trash2 } from "lucide-react";
 import { Button } from "@indoor-o-route-analysis/ui";
+import { MODEL_3D_TOOLS } from "./tools";
 
 interface Model3DInfoDialogProps {
   isOpen: boolean;
@@ -43,6 +44,18 @@ export default function Model3DInfoDialog({
             </div>
 
             <div>
+              <p className="font-medium text-foreground mb-1">Tools</p>
+              <ul className="space-y-1.5 ml-2">
+                {MODEL_3D_TOOLS.map((t) => (
+                  <li key={t.id}>
+                    <t.icon className={iconClass} />
+                    <strong>{t.label}</strong> (<kbd>{t.shortcut}</kbd>) &mdash; {t.description}
+                  </li>
+                ))}
+              </ul>
+            </div>
+
+            <div>
               <p className="font-medium text-foreground mb-1">Toolbar Buttons</p>
               <ul className="space-y-1.5 ml-2">
                 <li><Maximize2 className={iconClass} /><strong>Frame all</strong> &mdash; Reset the 3D camera to frame all geometry in the scene.</li>
@@ -60,6 +73,7 @@ export default function Model3DInfoDialog({
               <p className="font-medium text-foreground mb-1">In-Panel Actions</p>
               <ul className="space-y-1.5 ml-2">
                 <li><Target className={iconClass} /><strong>Navigate</strong> &mdash; Center the map on a specific polygon or verification finding.</li>
+                <li><Trash2 className={iconClass} /><strong>Delete floor</strong> &mdash; In the floor list, delete a floor (its polygon) after confirming. Undo with <kbd>Ctrl/Cmd+Z</kbd>.</li>
               </ul>
             </div>
 
@@ -68,10 +82,10 @@ export default function Model3DInfoDialog({
               <ol className="list-decimal list-inside space-y-1 ml-2">
                 <li>Ensure your map has separate pages or areas for each floor level</li>
                 <li>Navigate to the first floor on your map</li>
-                <li>Click to draw a polygon around the floor boundary, press Enter to complete</li>
+                <li>Choose the <strong>Polygon</strong> tool (<kbd>P</kbd>) and click to draw a polygon around the floor boundary, press Enter to complete</li>
                 <li>Set the level number in the properties panel</li>
                 <li>Repeat for each floor level in your venue</li>
-                <li>Align floors using the drag-to-align feature (match stairwells)</li>
+                <li>Align floors with the <strong>Set origin by reference to other level</strong> tool (<kbd>R</kbd>), matching e.g. stairwell corners</li>
                 <li>Adjust origin points if textures appear offset</li>
                 <li>Use the 3D view to verify the model looks correct from different angles</li>
               </ol>
@@ -80,7 +94,7 @@ export default function Model3DInfoDialog({
             <div>
               <p className="font-medium text-foreground mb-1">Creating Polygons</p>
               <p>
-                Click on the map to start drawing a polygon. Continue clicking to add points.
+                With the <strong>Polygon</strong> tool, click on the map to start drawing a polygon. Continue clicking to add points.
                 Press <strong>Enter</strong> to close and finish the polygon.
                 Press <strong>Escape</strong> to cancel drawing.
               </p>
@@ -89,12 +103,12 @@ export default function Model3DInfoDialog({
             <div>
               <p className="font-medium text-foreground mb-1">Editing Polygons</p>
               <p>
-                Click on a polygon to select it.
+                Click on a polygon to select it (any tool). Points, edges and the origin can be edited with the <strong>Polygon</strong> tool; the <strong>Select</strong> tool only selects.
               </p>
               <ul className="list-disc pl-5 mt-1 space-y-1">
                   <li><strong>Move Points:</strong> Drag any blue vertex point.</li>
                   <li><strong>Add Points:</strong> Click on the edge of a selected polygon to split it and add a new point.</li>
-                  <li><strong>Delete:</strong> Select a point and press Delete/Backspace to remove it. Select the polygon (click inside) and press Delete to remove the whole polygon.</li>
+                  <li><strong>Delete:</strong> With the Polygon tool, select a point and press Delete/Backspace to remove it, or select the polygon (click inside) and press Delete to remove the whole polygon.</li>
                   <li><strong>Fine Tuning:</strong> Use Arrow keys to nudge selected points. Hold Shift for larger steps.</li>
               </ul>
             </div>
@@ -106,7 +120,7 @@ export default function Model3DInfoDialog({
               </p>
               <ul className="list-disc pl-5 mt-1 space-y-1">
                   <li><strong>Move Origin:</strong> Drag the origin point to shift how the floor texture is projected in 3D.</li>
-                  <li><strong>Align Levels:</strong> Click and drag from inside a selected polygon (not on a point) to a point on another polygon. This matches the start and end points of your drag action, effectively aligning the two floors based on a common feature (like a stairwell corner).</li>
+                  <li><strong>Align Levels:</strong> With the <strong>Set origin by reference to other level</strong> tool, press on a point inside a polygon and drag to the same physical point (like a stairwell corner) in a polygon on another level. The first polygon&apos;s origin is updated so the two points line up in 3D.</li>
               </ul>
             </div>
 

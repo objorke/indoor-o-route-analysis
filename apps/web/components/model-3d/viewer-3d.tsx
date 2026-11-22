@@ -8,6 +8,7 @@ import { useAppData } from "@indoor-o-route-analysis/ui";
 import { getEventTransform, getPageIndexForEventPos } from "@indoor-o-route-analysis/core";
 import type { MapData, Polygon } from "@indoor-o-route-analysis/core";
 import { mapToWorld, worldToMap, worldToVector3, getPolygonElevation } from "@indoor-o-route-analysis/core/3d";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 // Lazy-loaded pdfjs instance
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -526,13 +527,13 @@ const Model3DViewer = forwardRef<Model3DViewerHandle, Model3DViewerProps>(
       exportModel: async () => {
         const polygons = selectedEvent?.raceCourses?.[0]?.polygons;
         if (!polygons || polygons.length === 0) {
-          alert("No polygons to export");
+          notify("No polygons to export");
           return;
         }
 
         const activeMapData = selectedEvent?.raceCourses?.[0]?.maps?.[0];
         if (!activeMapData) {
-          alert("No map data available for export");
+          notify("No map data available for export");
           return;
         }
 

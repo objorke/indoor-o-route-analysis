@@ -7,7 +7,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Input } from "@indoor-o-route-analysis/ui";
 import { Progress } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer, getEventScoringModel, mergeRaceCourse } from "@indoor-o-route-analysis/core";
 import type { Node, Control } from "@indoor-o-route-analysis/core";
 import { Play, Square, Info, MousePointer2, Navigation, Wrench, GitCommitHorizontal, Waypoints } from "lucide-react";
 import { ScrollArea } from "@indoor-o-route-analysis/ui";
@@ -19,6 +19,7 @@ import { MapVisibilityToggle } from "@/components/map-visibility-toggle";
 import ModifyGraphInfoDialog from "@/components/modify-graph/info-dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@indoor-o-route-analysis/ui";
 import { runModifyGraphAnalysis, type AnalysisResult, type ModifyStrategy, type ModifyObjective } from "./analysis-logic";
+import { notify, confirmAction } from "@indoor-o-route-analysis/ui";
 
 interface ModifyGraphPropertiesPanelProps {
   onRouteSelect: (route: { path: string[], distance: number, modification?: AnalysisResult["modification"], centerOnModification?: boolean } | null) => void;
@@ -59,7 +60,7 @@ export default function ModifyGraphPropertiesPanel({
     excludeStairs = false,
     setExcludeStairs
 }: ModifyGraphPropertiesPanelProps) {
-  const { selectedEvent, updateEventData } = useAppData();
+  const { selectedEvent, updateEvent } = useAppData();
   const [isRunning, setIsRunning] = useState(false);
   const [progress, setProgress] = useState(0);
   const [processedCount, setProcessedCount] = useState(0);
@@ -144,15 +145,13 @@ export default function ModifyGraphPropertiesPanel({
       const controls = selectedEvent.raceCourses?.[0]?.controls || [];
       const nodes = selectedEvent.raceCourses?.[0]?.vertices || [];
       const edges = selectedEvent.raceCourses?.[0]?.edges || [];
-      const scale = selectedEvent.raceCourses?.[0]?.maps?.[0]?.scale || 10000;
-      const polygons = selectedEvent?.raceCourses?.[0]?.polygons || [];
-      
+
       // Resolve control IDs to node IDs for pathfinding
       const startId = resolveToNodeId(modifyFrom, nodes, controls);
       const endId = resolveToNodeId(modifyTo, nodes, controls);
       
       try {
-           const analyzer = new RouteAnalyzer(controls, nodes, edges, scale, undefined, polygons);
+           const analyzer = createEventRouteAnalyzer(selectedEvent);
            const routes = analyzer.findAlternativePaths(startId, endId, 1);
            if (routes.length > 0) {
                const route = routes[0];
@@ -192,8 +191,6 @@ export default function ModifyGraphPropertiesPanel({
     const controls = selectedEvent.raceCourses?.[0]?.controls || [];
     const nodes = selectedEvent.raceCourses?.[0]?.vertices || [];
     const edges = selectedEvent.raceCourses?.[0]?.edges || [];
-    const scale = selectedEvent.raceCourses?.[0]?.maps?.[0]?.scale || 10000;
-    const polygons = selectedEvent?.raceCourses?.[0]?.polygons || [];
 
     if (edges.length === 0) {
        return;
@@ -229,8 +226,7 @@ export default function ModifyGraphPropertiesPanel({
             edges,
             nodes,
             controls,
-            scale,
-            polygons,
+            event: selectedEvent,
             modifyFrom: startId,
             modifyTo: endId,
             modifyStrategy,
@@ -256,7 +252,7 @@ export default function ModifyGraphPropertiesPanel({
         }
     } catch (e) {
         console.error("Analysis failed", e);
-        alert("Analysis failed: " + String(e));
+        notify("Analysis failed: " + String(e), { kind: "error" });
     } finally {
         if (!signal.aborted) {
             setIsRunning(false);
@@ -279,7 +275,7 @@ export default function ModifyGraphPropertiesPanel({
 
   const handleApply = async (res: AnalysisResult) => {
       if (!res.modification || !selectedEvent) return;
-      if (!window.confirm(`Are you sure you want to ${res.modification.description}? This will modify the graph permanently.`)) return;
+      if (!(await confirmAction(`Are you sure you want to ${res.modification.description}? This will modify the graph permanently.`, { title: "Apply graph change", confirmLabel: "Apply" }))) return;
 
       const raceCourses = selectedEvent.raceCourses || [];
       const currentEdges = raceCourses[0]?.edges || [];
@@ -299,11 +295,8 @@ export default function ModifyGraphPropertiesPanel({
       }
 
       // Update event
-      const updatedRaceCourses = [
-          { ...raceCourses[0], edges: newEdges },
-          ...raceCourses.slice(1)
-      ];
-      await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+      // newEdges is matched by identity against the analysed edges; merge only the edges into the latest event
+      await updateEvent(selectedEvent.id, (e) => mergeRaceCourse(e, { edges: newEdges }), undefined, { label: "Apply graph change" });
   };
 
   const handleRowClick = (res: AnalysisResult, shouldPan: boolean = false) => {
@@ -416,7 +409,7 @@ export default function ModifyGraphPropertiesPanel({
                 </div>
                 {originalDifficulty !== null && (
                     <div className="h-8 flex items-center">
-                         <DifficultyTag difficulty={originalDifficulty} />
+                         <DifficultyTag difficulty={originalDifficulty} scoringModel={getEventScoringModel(selectedEvent)} />
                     </div>
                 )}
             </div>
@@ -531,7 +524,7 @@ export default function ModifyGraphPropertiesPanel({
                                 </td>
                                 <td className="p-4 align-middle text-right">
                                     <div className="flex flex-col items-end gap-0.5">
-                                        <DifficultyTag difficulty={res.difficulty} />
+                                        <DifficultyTag difficulty={res.difficulty} scoringModel={getEventScoringModel(selectedEvent)} />
                                         {diffText && (
                                             <span className={cn("text-[10px] font-medium", parseFloat(diffText) > 0 ? "text-green-600" : "text-red-600")}>
                                                 {diffText}

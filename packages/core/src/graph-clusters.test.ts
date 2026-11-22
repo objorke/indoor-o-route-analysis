@@ -22,6 +22,36 @@ describe("computeSameFloorClusters", () => {
   });
 });
 
+describe("computeSameFloorClusters with floors", () => {
+  const floors: Record<string, number> = { A: 0, B: 0, C: 1, D: 1 };
+  const levelOf = (id: string) => floors[id];
+
+  it("merges two-way edges on the same floor, regardless of label or zero length", () => {
+    const edges: Edge[] = [
+      { from: "A", to: "B", label: "7", ignoreLength: true },
+      { from: "C", to: "D", label: "" },
+    ];
+    const uf = computeSameFloorClusters(edges, levelOf);
+    expect(uf.find("A")).toBe(uf.find("B"));
+    expect(uf.find("C")).toBe(uf.find("D"));
+  });
+
+  it("never merges nodes on different floors, even via an unlabeled two-way edge", () => {
+    const uf = computeSameFloorClusters([{ from: "B", to: "C", label: "" }], levelOf);
+    expect(uf.find("B")).not.toBe(uf.find("C"));
+  });
+
+  it("does not merge across a one-way edge on the same floor", () => {
+    const uf = computeSameFloorClusters([{ from: "A", to: "B", label: "", oneWay: true }], levelOf);
+    expect(uf.find("A")).not.toBe(uf.find("B"));
+  });
+
+  it("does not merge a known floor with an unknown one", () => {
+    const uf = computeSameFloorClusters([{ from: "A", to: "X", label: "" }], levelOf);
+    expect(uf.find("A")).not.toBe(uf.find("X"));
+  });
+});
+
 describe("computeClusteredGraph", () => {
   it("groups a same-floor chain into one cluster and keeps stair-separated floors apart", () => {
     const edges: Edge[] = [

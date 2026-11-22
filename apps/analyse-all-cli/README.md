@@ -12,7 +12,7 @@ pnpm analyse-all [inputFolder] [outputFolder] [fileFilter] [flags]
 
 | Argument       | Default                    | Description                                |
 | -------------- | --------------------------- | ------------------------------------------ |
-| `inputFolder`  | `../web/public/examples`    | Folder containing event JSON files         |
+| `inputFolder`  | `../../test-data/events`    | Folder containing event JSON files         |
 | `outputFolder` | `../../output/route-analysis` | Folder for output CSV, JSONL, and Excel reports |
 | `fileFilter`   | (none)                      | Only process files containing this string  |
 
@@ -30,10 +30,10 @@ pnpm analyse-all [inputFolder] [outputFolder] [fileFilter] [flags]
 pnpm analyse-all
 
 # Analyze only 2026 files
-pnpm analyse-all ../web/public/examples ../../output/route-analysis 2026
+pnpm analyse-all ../../test-data/events ../../output/route-analysis 2026
 
 # Include the maximum-difficulty leg scan at a 3.5 m/s pace
-pnpm analyse-all ../web/public/examples ../../output/route-analysis 2026 --max-leg --speed=3.5
+pnpm analyse-all ../../test-data/events ../../output/route-analysis 2026 --max-leg --speed=3.5
 ```
 
 ## Output
@@ -45,5 +45,5 @@ remain available side by side. Each report is written as CSV, JSONL, and a
 combined `route-analysis.xlsx` workbook (sheets: `events`, `courses`, `legs`).
 
 - `events.csv` — one row per event: control count, course count, and (with `--max-leg`) the hardest possible leg between any two existing controls (e.g. `37-83`) and its difficulty, per model.
-- `courses.csv` — per-course scores: the course's target difficulty category and value (as set in the event manager, if any), course length, estimated running time, and per model the max & average difficulty plus the hardest leg (label, route, length).
+- `courses.csv` — per-course scores: the course's target difficulty category and value (as set in the Event view, if any), course length, estimated running time, and per model the max & average difficulty plus the hardest leg (label, route, length).
 - `legs.csv` — per-leg scores, including the course's target difficulty category and value for reference. For each leg, both the **shortest route** and the **lowest-difficulty route** are reported (route name, length, and difficulty), along with the number of stairs, branching points, and decision points, and the per-model difficulty.

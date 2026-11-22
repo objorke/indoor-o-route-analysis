@@ -5,6 +5,8 @@ import MapViewer, { type MapViewerState, type MapViewerController, multiPagePixe
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import type { Polygon } from "@indoor-o-route-analysis/core";
 import type { MapData } from "@indoor-o-route-analysis/core";
+import { mergeRaceCourse } from "@indoor-o-route-analysis/core";
+import { getModel3DTool, type Model3DTool } from "./tools";
 import {
   POLYGON_NODE_RADIUS,
   POLYGON_STROKE_WIDTH,
@@ -22,6 +24,8 @@ interface Model3DMapViewerProps {
   scale?: number;
   selectedPolygonId: string | null;
   onSelectPolygon: (id: string | null) => void;
+  /** Active interaction tool (see tools.ts). */
+  tool: Model3DTool;
 }
 
 export interface Model3DMapViewerHandle {
@@ -68,8 +72,9 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
   scale: _scale = 1,
   selectedPolygonId,
   onSelectPolygon,
+  tool,
 }, ref) => {
-  const { selectedEvent, updateEventData } = useAppData();
+  const { selectedEvent, updateEvent } = useAppData();
 
   const toPixels = useCallback(
     (state: MapViewerState, p: { x: number; y: number }) => eventPosToMultiPagePixels(p, map, state.pixelsPerMM),
@@ -90,6 +95,8 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
   const [isDraggingOrigin, setIsDraggingOrigin] = useState(false);
   const [selectedOriginPolygonId, setSelectedOriginPolygonId] = useState<string | null>(null);
   const [adjustOriginStart, setAdjustOriginStart] = useState<{ x: number; y: number } | null>(null);
+  // Polygon whose origin is being set by the "origin by reference" drag
+  const [adjustOriginSourceId, setAdjustOriginSourceId] = useState<string | null>(null);
   const [currentMousePos, setCurrentMousePos] = useState<{ x: number; y: number } | null>(null);
   const [pointerDown, setPointerDown] = useState<{ x: number; y: number; mapX: number; mapY: number } | null>(null);
   const [snapToAxis, _setSnapToAxis] = useState(true);
@@ -104,6 +111,20 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
       }
     },
   }), [map]);
+
+  // Switching tools cancels any in-progress interaction
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- reset transient interaction state on tool change
+    setCurrentPolygon([]);
+    setIsCreatingPolygon(false);
+    setSelectedPointIndex(null);
+    setSelectedOriginPolygonId(null);
+    setAdjustOriginStart(null);
+    setAdjustOriginSourceId(null);
+    setIsDraggingPoint(false);
+    setIsDraggingOrigin(false);
+    setPointerDown(null);
+  }, [tool]);
 
   // Node radius for points (same as graph editor)
   const nodeRadius = POLYGON_NODE_RADIUS;
@@ -123,14 +144,11 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
   // Save polygons to event
   const savePolygons = useCallback(
     (newPolygons: Polygon[]) => {
-      if (selectedEvent && selectedEvent.raceCourses) {
-        const updatedRaceCourses = selectedEvent.raceCourses.map((rc, i) =>
-          i === 0 ? { ...rc, polygons: newPolygons } : rc,
-        );
-        updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+      if (selectedEvent?.raceCourses) {
+        updateEvent(selectedEvent.id, (e) => mergeRaceCourse(e, { polygons: newPolygons }), undefined, { label: "Edit polygons" });
       }
     },
-    [selectedEvent, updateEventData],
+    [selectedEvent, updateEvent],
   );
 
   // Helper to calculate centroid of polygon
@@ -194,7 +212,7 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
         onSelectPolygon(null);
         setSelectedPointIndex(null);
         setSelectedOriginPolygonId(null);
-      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedPolygonId) {
+      } else if ((e.key === "Delete" || e.key === "Backspace") && selectedPolygonId && tool === "polygon") {
         if (selectedPointIndex !== null) {
           // Delete selected point from polygon
           const polygon = polygons.find((p) => p.id === selectedPolygonId);
@@ -305,6 +323,7 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
     savePolygons,
     finishPolygon,
     getCentroid,
+    tool,
   ]);
 
   const handleControllerReady = useCallback((controller: MapViewerController) => {
@@ -381,6 +400,39 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
       const mapY = p.y;
 
       const pointerInfo = { x: e.clientX, y: e.clientY, mapX, mapY };
+      const hitPolygon = (excludeId?: string | null) =>
+        polygons.find((poly) => poly.id !== excludeId && isPointInPolygon({ x: mapX, y: mapY }, poly.points));
+
+      // Select tool: only select/deselect polygons; empty space pans the map
+      if (tool === "select") {
+        const inSelected = selectedPolygonId
+          ? polygons.find((poly) => poly.id === selectedPolygonId && isPointInPolygon({ x: mapX, y: mapY }, poly.points))
+          : undefined;
+        const hit = inSelected ?? hitPolygon();
+        if (hit) {
+          e.stopPropagation();
+          onSelectPolygon(hit.id);
+        } else {
+          onSelectPolygon(null);
+        }
+        return;
+      }
+
+      // Origin-by-reference tool: press inside a polygon (the one whose origin is
+      // updated), drag to the matching point in another polygon, release.
+      if (tool === "origin-ref") {
+        const source = hitPolygon();
+        if (source) {
+          e.stopPropagation();
+          onSelectPolygon(source.id);
+          setAdjustOriginSourceId(source.id);
+          setAdjustOriginStart({ x: mapX, y: mapY });
+          setPointerDown(pointerInfo);
+        }
+        return;
+      }
+
+      // --- Polygon tool below: add and edit polygons ---
 
       // If creating a polygon, capture pointer for MouseUp to add point and skip selection
       if (isCreatingPolygon) {
@@ -440,11 +492,9 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
               return;
             }
           }
-          // 4. Click inside selected polygon (start alignment dragging)
+          // 4. Click inside selected polygon: keep it selected (alignment is its own tool)
           if (isPointInPolygon({ x: mapX, y: mapY }, polygon.points)) {
             e.stopPropagation();
-            setAdjustOriginStart({ x: mapX, y: mapY });
-            setPointerDown(pointerInfo);
             return;
           }
         }
@@ -469,7 +519,7 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
       // Start potential creation or deselection click
       setPointerDown(pointerInfo);
     },
-    [polygons, selectedPolygonId, onSelectPolygon, savePolygons, getCentroid, isCreatingPolygon, toPixels, toEvent],
+    [polygons, selectedPolygonId, onSelectPolygon, savePolygons, getCentroid, isCreatingPolygon, toPixels, toEvent, tool],
   );
 
   const handleCanvasMouseUp = useCallback(
@@ -504,31 +554,35 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
         const mapY = p.y;
 
         // Find if we released over another polygon
+        const sourceId = adjustOriginSourceId;
         const targetPolygon = polygons.find(
-          (p) => p.id !== selectedPolygonId && isPointInPolygon({ x: mapX, y: mapY }, p.points),
+          (p) => p.id !== sourceId && isPointInPolygon({ x: mapX, y: mapY }, p.points),
         );
 
-        if (targetPolygon && selectedPolygonId) {
-          const selectedPolygon = polygons.find((p) => p.id === selectedPolygonId);
-          if (selectedPolygon) {
+        if (targetPolygon && sourceId) {
+          const sourcePolygon = polygons.find((p) => p.id === sourceId);
+          if (sourcePolygon) {
+            // The pressed point (source) and the released point (target) are the same
+            // physical spot: make them coincide in world coordinates.
             const targetOrigin = targetPolygon.origin || getCentroid(targetPolygon.points);
             const newOriginX = adjustOriginStart.x - mapX + targetOrigin.x;
             const newOriginY = adjustOriginStart.y - mapY + targetOrigin.y;
 
             const newPolygons = polygons.map((p) =>
-              p.id === selectedPolygonId ? { ...p, origin: { x: newOriginX, y: newOriginY } } : p,
+              p.id === sourceId ? { ...p, origin: { x: newOriginX, y: newOriginY } } : p,
             );
             setPolygons(newPolygons);
             savePolygons(newPolygons);
           }
         }
         setAdjustOriginStart(null);
+        setAdjustOriginSourceId(null);
         setPointerDown(null);
         return;
       }
 
-      // If not moved since mouse down, this is a click - add point to polygon
-      if (!moved) {
+      // If not moved since mouse down, this is a click - add point to polygon (Polygon tool only)
+      if (!moved && tool === "polygon") {
         const canvas = e.currentTarget;
         const rect = canvas.getBoundingClientRect();
         const { zoom } = lastStateRef.current;
@@ -555,13 +609,14 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
     },
     [
       pointerDown,
+      tool,
       isDraggingPoint,
       isDraggingOrigin,
       isCreatingPolygon,
       currentPolygon,
       adjustOriginStart,
+      adjustOriginSourceId,
       polygons,
-      selectedPolygonId,
       getCentroid,
       savePolygons,
       toEvent,
@@ -830,7 +885,7 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
                 left: 0,
                 width: "100%",
                 height: "100%",
-                cursor: isDraggingPoint || isDraggingOrigin ? "grabbing" : "crosshair",
+                cursor: isDraggingPoint || isDraggingOrigin ? "grabbing" : tool === "select" ? "default" : "crosshair",
               }}
               onContextMenu={handleCanvasRightClick}
               onMouseDown={handleCanvasMouseDown}
@@ -840,6 +895,10 @@ const Model3DMapViewer = forwardRef<Model3DMapViewerHandle, Model3DMapViewerProp
           </>
         )}
       </MapViewer>
+      {/* Active tool hint */}
+      <div className="absolute top-2 left-12 z-10 pointer-events-none rounded border border-border bg-background/90 px-2 py-1 text-xs text-muted-foreground shadow-sm">
+        <span className="font-medium text-foreground">{getModel3DTool(tool).label}:</span> {getModel3DTool(tool).hint}
+      </div>
     </div>
   );
 });

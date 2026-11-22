@@ -3,12 +3,15 @@
 import { useState, useEffect, useRef } from "react";
 import dynamic from "next/dynamic"
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { getActiveMap } from "@indoor-o-route-analysis/core";
+import { getActiveMap, mergeRaceCourse } from "@indoor-o-route-analysis/core";
 import Model3DPropertiesPanel, { type ModelMistake } from "./properties-panel";
 import type { Model3DViewerHandle } from "./viewer-3d";
 import type { Model3DMapViewerHandle } from "./map-viewer";
-import { findPolygonForPoint } from "@indoor-o-route-analysis/core";
+import { isPointInPolygon, getEventMapScale } from "@indoor-o-route-analysis/core";
 import { mapToWorld } from "@indoor-o-route-analysis/core/3d";
+import { MODEL_3D_TOOLS, type Model3DTool } from "./tools";
+import { Model3DToolbar } from "./toolbar";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 const Model3DMapViewer = dynamic(() => import("./map-viewer"), {
   ssr: false,
@@ -23,17 +26,40 @@ const Model3DViewer = dynamic(() => import("./viewer-3d"), {
 export default function Model3D() {
   const [selectedPolygonId, setSelectedPolygonId] = useState<string | null>(null);
   const [pdfUrl, setPdfUrl] = useState<string | null>(null);
-  const [mapScale, setMapScale] = useState<number>(1);
   const [_isLoading, setIsLoading] = useState(true);
   const [frameAllTrigger, setFrameAllTrigger] = useState(false);
   const [show3D, setShow3D] = useState(false);
-  const { selectedEvent, pdfBlobUrl, updateEventData, selectedCourseId } = useAppData();
+  const { selectedEvent, pdfBlobUrl, updateEvent, selectedCourseId } = useAppData();
+  // Drop the selection when its polygon no longer exists (e.g. after undo)
+  const polygonIds = selectedEvent?.raceCourses?.[0]?.polygons?.map((p) => p.id).join("\u0000") ?? "";
+  useEffect(() => {
+    if (selectedPolygonId && !polygonIds.split("\u0000").includes(selectedPolygonId)) setSelectedPolygonId(null);
+  }, [polygonIds, selectedPolygonId]);
   const viewerRef = useRef<Model3DViewerHandle>(null);
   const mapViewerRef = useRef<Model3DMapViewerHandle>(null);
   const [findings, setFindings] = useState<ModelMistake[]>([]);
   const [verified, setVerified] = useState(false);
+  const [tool, setTool] = useState<Model3DTool>("select");
+
+  // Tool shortcuts (V / P / R), ignored while typing or with modifier keys
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      const target = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable) return;
+      const match = MODEL_3D_TOOLS.find((t) => t.shortcut.toLowerCase() === e.key.toLowerCase());
+      if (match) {
+        e.preventDefault();
+        setTool(match.id);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
 
   const activeMap = getActiveMap(selectedEvent ?? undefined, selectedCourseId);
+  // Derived, never a stale copy (same fallback as the route analyzer)
+  const mapScale = getEventMapScale(selectedEvent, selectedCourseId);
 
   const handleVerify = () => {
     if (!selectedEvent) return;
@@ -47,11 +73,13 @@ export default function Model3D() {
     const polygons = raceCourse?.polygons || [];
 
     const newFindings: ModelMistake[] = [];
+    // Strict containment: findPolygonForPoint falls back to the nearest polygon,
+    // which would hide exactly the mistakes this check is meant to find
+    const insideAnyPolygon = (p: { x: number; y: number }) => polygons.some((poly) => isPointInPolygon(p, poly.points));
 
     // Check controls
     controls.forEach((c) => {
-      const polygon = findPolygonForPoint(c.mapPosition, polygons);
-      if (!polygon) {
+      if (!insideAnyPolygon(c.mapPosition)) {
         newFindings.push({
           id: c.id,
           type: "control",
@@ -63,13 +91,9 @@ export default function Model3D() {
 
     // Check nodes (vertices)
     vertices.forEach((v) => {
-      const point = {
-        x: v.x,
-        y: v.y,
-        level: 0, // Nodes don't have a level property, default to 0
-      };
-      const polygon = findPolygonForPoint(point, polygons);
-      if (!polygon) {
+      // Nodes have no level: a node is fine if it lies inside a polygon on any floor
+      const point = { x: v.x, y: v.y };
+      if (!insideAnyPolygon(point)) {
         newFindings.push({
           id: v.id,
           type: "node",
@@ -89,12 +113,6 @@ export default function Model3D() {
   // Load map from selectedEvent
   useEffect(() => {
     const map = activeMap;
-
-    // Set scale always if map exists
-    if (map?.scale) {
-      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing local state from context
-      setMapScale(map.scale);
-    }
 
     if (pdfBlobUrl) {
       setPdfUrl(pdfBlobUrl);
@@ -126,7 +144,7 @@ export default function Model3D() {
   const handleExportPolygonsJson = () => {
     const polygons = selectedEvent?.raceCourses?.[0]?.polygons;
     if (!polygons || polygons.length === 0) {
-      alert("No polygons to export");
+      notify("No polygons to export");
       return;
     }
     const json = JSON.stringify(polygons, null, 2);
@@ -145,22 +163,19 @@ export default function Model3D() {
       try {
         const parsed = JSON.parse(e.target?.result as string);
         if (!Array.isArray(parsed)) {
-          alert("Invalid format: expected an array of polygons");
+          notify("Invalid format: expected an array of polygons", { kind: "error" });
           return;
         }
         for (const p of parsed) {
           if (typeof p.id !== "string" || !Array.isArray(p.points) || typeof p.level !== "number") {
-            alert("Invalid polygon data: each polygon must have id (string), points (array), and level (number)");
+            notify("Invalid polygon data: each polygon must have id (string), points (array), and level (number)", { kind: "error" });
             return;
           }
         }
         if (!selectedEvent?.raceCourses?.[0]) return;
-        const updatedRaceCourses = selectedEvent.raceCourses.map((rc, i) =>
-          i === 0 ? { ...rc, polygons: parsed } : rc
-        );
-        updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+        updateEvent(selectedEvent.id, (e) => mergeRaceCourse(e, { polygons: parsed }), undefined, { label: "Import polygons" });
       } catch {
-        alert("Failed to parse JSON file");
+        notify("Failed to parse JSON file", { kind: "error" });
       }
     };
     reader.readAsText(file);
@@ -169,7 +184,7 @@ export default function Model3D() {
   const handleExport = () => {
     const polygons = selectedEvent?.raceCourses?.[0]?.polygons;
     if (!polygons || polygons.length === 0) {
-      alert("No polygons to export");
+      notify("No polygons to export");
       return;
     }
 
@@ -178,7 +193,7 @@ export default function Model3D() {
     objContent += "mtllib model.mtl\n\n";
 
     if (!activeMap) {
-      alert("No map data for export");
+      notify("No map data for export");
       return;
     }
 
@@ -253,7 +268,8 @@ export default function Model3D() {
       {/* Main View Split Panel */}
       <div className="flex flex-1 overflow-hidden h-full">
         {/* Left Panel - Map View */}
-        <div className="flex-1 overflow-hidden border-r h-full">
+        <div className="relative flex-1 overflow-hidden border-r h-full">
+          <Model3DToolbar tool={tool} onToolChange={setTool} />
           <Model3DMapViewer
             ref={mapViewerRef}
             map={activeMap}
@@ -261,6 +277,7 @@ export default function Model3D() {
             scale={mapScale}
             selectedPolygonId={selectedPolygonId}
             onSelectPolygon={setSelectedPolygonId}
+            tool={tool}
           />
         </div>
 

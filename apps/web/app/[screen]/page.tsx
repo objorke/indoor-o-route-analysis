@@ -3,6 +3,7 @@ import AppShell from "@/components/app-shell";
 export function generateStaticParams() {
   return [
     { screen: "event-manager" },
+    { screen: "directions" },
     { screen: "course-setting" },
     { screen: "graph-editor" },
     { screen: "route-builder" },

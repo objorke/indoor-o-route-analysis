@@ -2,7 +2,7 @@
 
 import React, { useMemo, useRef, useEffect, useState, forwardRef, useImperativeHandle } from "react";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import { createEventRouteAnalyzer } from "@indoor-o-route-analysis/core";
 import { findPolygonForPoint } from "@indoor-o-route-analysis/core";
 import { getActualCourseControls } from "@indoor-o-route-analysis/core"; 
 import { VideoExporter } from "@indoor-o-route-analysis/core/export";
@@ -128,16 +128,12 @@ const RouteAnalysisModelViewer = forwardRef<RouteAnalysisModelViewerHandle, Rout
 
     if (!c1.controlId || !c2.controlId) return null;
 
-    // We need controls/nodes/edges from event
     const controls = raceCourse.controls || [];
     const nodes = raceCourse.vertices || [];
     const edges = raceCourse.edges || [];
 
-    // Use passed scale or event scale
-    const effectiveScale = scale || raceCourse.maps?.[0]?.scale || 1000;
-    const polygons = raceCourse.polygons || [];
-
-    const routeAnalyzer = new RouteAnalyzer(controls, nodes, edges, effectiveScale, undefined, polygons);
+    // Same analyzer setup as every other view (floor polygons, map scale, event scoring model)
+    const routeAnalyzer = createEventRouteAnalyzer(selectedEvent, { courseId: selectedCourseId });
     const allRoutes = routeAnalyzer.findAlternativePathsBetweenControls(c1.controlId, c2.controlId);
 
     // Ensure sorted by distance (shortest first) to prioritize best routes during filtering

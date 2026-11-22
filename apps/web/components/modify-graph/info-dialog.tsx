@@ -107,7 +107,7 @@ export default function ModifyGraphInfoDialog({
               <p className="font-semibold mb-1">Analyzing Results</p>
               <p className="text-muted-foreground">
                 The results list shows the best modifications based on your objective.
-                Click on a result to see the modified route (blue) compared to the original route (green).
+                Click on a result to see the modified route (cyan) compared to the original route (red, drawn like the best route in Route Analysis).
                 Use the <strong>Exclude edges with ignored length</strong> checkbox to prevent modifying staircases.
               </p>
             </div>

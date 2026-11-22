@@ -38,14 +38,14 @@ export function PreviewWarning() {
   if (!visible) return null;
 
   return (
-    <div className="w-full bg-red-950 border-b border-red-900 text-red-400 px-4 py-1 text-xs flex items-center justify-between">
+    <div className="w-full bg-destructive/15 border-b border-destructive/30 text-destructive px-4 py-1 text-xs flex items-center justify-between">
       <div className="flex-1 text-left font-medium">
         This is a proof-of-concept application. It may be unstable and all features may not work properly.
       </div>
       <Button
         variant="ghost"
         size="icon"
-        className="h-6 w-6 ml-2 text-red-400 hover:bg-red-900 hover:text-red-300"
+        className="h-6 w-6 ml-2 text-destructive hover:bg-destructive/20"
         onClick={handleDismiss}
         aria-label="Dismiss warning"
       >

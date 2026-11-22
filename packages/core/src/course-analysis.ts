@@ -1,4 +1,8 @@
 import { RouteAnalyzer, type RouteInfo } from "./route-analyzer";
+import {
+  DEFAULT_ROUTE_ENUMERATION_ALGORITHM,
+  type RouteEnumerationAlgorithm,
+} from "./route-enumeration-algorithms";
 import type { Course, EventData, Control } from "./models";
 import { getCourseControlLabels, getActualCourseControls } from "./utils";
 import { type DifficultyCategory, type ScoringModel, ScoringModelRegistry } from "./scoring-models";
@@ -89,13 +93,16 @@ export interface CourseAnalysisProgress {
  * @param event - The event containing controls and graph data
  * @param routeAnalyzer - Configured RouteAnalyzer instance
  * @param findAllRoutes - Whether to find all alternative routes or filter by unique stair sequences
+ * @param k - Maximum alternative routes per leg when findAllRoutes is off
+ * @param algorithm - Enumeration algorithm used when findAllRoutes is on
  */
 export async function* analyzeCourseLegsGenerator(
   course: Course,
   event: EventData,
   routeAnalyzer: RouteAnalyzer,
   findAllRoutes: boolean = false,
-  k: number = 6
+  k: number = 6,
+  algorithm: RouteEnumerationAlgorithm = DEFAULT_ROUTE_ENUMERATION_ALGORITHM,
 ): AsyncGenerator<CourseAnalysisProgress> {
   const controls = event.raceCourses?.[0]?.controls || [];
   // Get actual course controls (intermediate start controls removed)
@@ -128,7 +135,13 @@ export async function* analyzeCourseLegsGenerator(
       if (fromControlId !== toControlId && fromControl && toControl) {
         // Calculate alternative routes — use exhaustive search when findAllRoutes is enabled
         const allAlternatives = findAllRoutes
-          ? routeAnalyzer.findAllAlternativePathsBetweenControls(fromControlId, toControlId, COURSE_OVERVIEW_MAX_ROUTES)
+          ? routeAnalyzer.findAllAlternativePathsBetweenControls(
+              fromControlId,
+              toControlId,
+              COURSE_OVERVIEW_MAX_ROUTES,
+              undefined,
+              algorithm,
+            )
           : routeAnalyzer.findAlternativePathsBetweenControls(fromControlId, toControlId, k);
 
         // Ensure sorted by distance (shortest first)
@@ -208,7 +221,8 @@ export function analyzeCourseLegs(
   event: EventData,
   routeAnalyzer: RouteAnalyzer,
   findAllRoutes: boolean = false,
-  maxRoutes: number = COURSE_OVERVIEW_MAX_ROUTES
+  maxRoutes: number = COURSE_OVERVIEW_MAX_ROUTES,
+  algorithm: RouteEnumerationAlgorithm = DEFAULT_ROUTE_ENUMERATION_ALGORITHM,
 ): CourseAnalysisResult {
   const controls = event.raceCourses?.[0]?.controls || [];
   // Get actual course controls (intermediate start controls removed)
@@ -236,7 +250,13 @@ export function analyzeCourseLegs(
       if (fromControlId !== toControlId && fromControl && toControl) {
         // Use exhaustive search when findAllRoutes is enabled
         const allAlternatives = findAllRoutes
-          ? routeAnalyzer.findAllAlternativePathsBetweenControls(fromControlId, toControlId, maxRoutes)
+          ? routeAnalyzer.findAllAlternativePathsBetweenControls(
+              fromControlId,
+              toControlId,
+              maxRoutes,
+              undefined,
+              algorithm,
+            )
           : routeAnalyzer.findAlternativePathsBetweenControls(fromControlId, toControlId, 6);
         allAlternatives.sort((a, b) => a.distance - b.distance);
 
@@ -288,4 +308,48 @@ export function analyzeCourseLegs(
   }
 
   return { legs, routes };
+}
+
+/** Minimum relative extra distance of the easiest route for a leg to count as a trap. */
+export const TRAP_MIN_DISTANCE_RATIO = 0.1;
+
+/** Minimum relative difficulty reduction of the easiest route for a leg to count as a trap. */
+export const TRAP_MIN_DIFFICULTY_RATIO = 0.1;
+
+/**
+ * Detect a "trap" leg: the shortest route is more difficult than a longer
+ * route, so runners may pick the easier (longer) route even though a shorter,
+ * harder one exists.
+ *
+ * Difficulties are compared rounded to whole numbers (as displayed, "Dxx").
+ * The easiest route must also be more than `minDistanceRatio` longer than the
+ * shortest route (default 10%); smaller detours are not considered traps.
+ * Likewise, it must be more than `minDifficultyRatio` easier (default 10%).
+ *
+ * @param shortestDifficulty - Difficulty of the leg's shortest route
+ * @param routes - Alternative routes for the leg
+ * @param minDistanceRatio - Minimum relative extra distance of the easiest route
+ * @param minDifficultyRatio - Minimum relative difficulty reduction of the easiest route
+ * @returns The easiest longer route if the leg is a trap, otherwise undefined
+ */
+export function findTrapEasierRoute<R extends { distance: number; difficulty?: number }>(
+  shortestDifficulty: number,
+  routes: readonly R[],
+  minDistanceRatio: number = TRAP_MIN_DISTANCE_RATIO,
+  minDifficultyRatio: number = TRAP_MIN_DIFFICULTY_RATIO,
+): R | undefined {
+  if (!Number.isFinite(shortestDifficulty) || routes.length === 0) return undefined;
+  const shortestDistance = Math.min(...routes.map((r) => r.distance));
+  let easiest: R | undefined;
+  for (const r of routes) {
+    if (r.difficulty === undefined || !Number.isFinite(r.difficulty)) continue;
+    if (r.distance <= shortestDistance) continue;
+    if (!easiest || r.difficulty < easiest.difficulty!) easiest = r;
+  }
+  if (!easiest) return undefined;
+  if (easiest.distance <= shortestDistance * (1 + minDistanceRatio)) return undefined;
+  const shortestRounded = Math.round(shortestDifficulty);
+  const easiestRounded = Math.round(easiest.difficulty!);
+  if (easiestRounded >= shortestRounded) return undefined;
+  return easiestRounded < shortestRounded * (1 - minDifficultyRatio) ? easiest : undefined;
 }

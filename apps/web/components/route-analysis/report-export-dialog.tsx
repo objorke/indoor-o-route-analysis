@@ -102,7 +102,7 @@ export function ReportExportDialog({
         </div>
 
         {/* Footer */}
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-gray-50/50">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-muted/30">
             <Button size="sm" onClick={handleExport}>Export</Button>
         </div>
       </div>

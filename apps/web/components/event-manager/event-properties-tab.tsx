@@ -1,8 +1,11 @@
-import { Input } from "@indoor-o-route-analysis/ui";
+import { useRef, useState } from "react";
+import { ImageDown, ImagePlus, Loader2, X } from "lucide-react";
+import { Button, Input } from "@indoor-o-route-analysis/ui";
 import { Label } from "@indoor-o-route-analysis/ui";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@indoor-o-route-analysis/ui";
 import { NO, SE } from 'country-flag-icons/react/3x2';
 import { safeHttpUrl } from "@/components/shared";
+import { embedImageFromUrl, formatDataUrlInfo, imageBlobToDataUrl, isDataUrl } from "@/lib/embed-image";
 // import type { EventData } from "@indoor-o-route-analysis/core"; // Unused
 
 interface EventPropertiesTabProps {
@@ -18,6 +21,8 @@ interface EventPropertiesTabProps {
   eventImageUrlInput: string;
   setEventImageUrlInput: (value: string) => void;
   handleEventImageUrlBlur: () => void;
+  /** Set and save the event image (URL or embedded data: URL) in one step. */
+  commitEventImage: (value: string) => void;
   mapDownloadUrlInput: string;
   setMapDownloadUrlInput: (value: string) => void;
   handleMapDownloadUrlBlur: () => void;
@@ -38,12 +43,42 @@ export function EventPropertiesTab({
   eventImageUrlInput,
   setEventImageUrlInput,
   handleEventImageUrlBlur,
+  commitEventImage,
   mapDownloadUrlInput,
   setMapDownloadUrlInput,
   handleMapDownloadUrlBlur,
   countryInput,
   handleCountryChange,
 }: EventPropertiesTabProps) {
+  const imageFileRef = useRef<HTMLInputElement>(null);
+  const [imageBusy, setImageBusy] = useState(false);
+  const [imageError, setImageError] = useState<string | null>(null);
+  const isEmbedded = isDataUrl(eventImageUrlInput);
+  const canEmbedFromUrl = !!safeHttpUrl(eventImageUrlInput);
+  // Privacy: a remote image from an opened file is only fetched after a click (fetching reveals the
+  // viewer's IP address to that host). Embedded images and addresses typed in this session show directly.
+  const [allowedRemoteImage, setAllowedRemoteImage] = useState<string | null>(null);
+  const showImage = isEmbedded || (!!eventImageUrlInput && allowedRemoteImage === eventImageUrlInput);
+  const remoteHost = (() => {
+    try {
+      return new URL(eventImageUrlInput).host;
+    } catch {
+      return "";
+    }
+  })();
+
+  const runEmbed = async (task: () => Promise<string>) => {
+    setImageBusy(true);
+    setImageError(null);
+    try {
+      commitEventImage(await task());
+    } catch (err) {
+      setImageError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setImageBusy(false);
+    }
+  };
+
   return (
     <div className="flex-1 p-6 overflow-auto">
       <div className="flex gap-8">
@@ -78,7 +113,7 @@ export function EventPropertiesTab({
 
           <div>
             <Label htmlFor="event-url" className="text-xs text-muted-foreground">
-              {"Event URL"}
+              {"Event website"}
             </Label>
             <Input
               id="event-url"
@@ -86,29 +121,91 @@ export function EventPropertiesTab({
               value={eventUrlInput}
               onChange={(e) => setEventUrlInput(e.target.value)}
               onBlur={handleEventUrlBlur}
-              placeholder="https://..."
+              placeholder="https://"
               className="mt-1"
             />
           </div>
 
           <div>
             <Label htmlFor="event-image-url" className="text-xs text-muted-foreground">
-              {"Event image URL"}
+              {"Event image"}
             </Label>
-            <Input
-              id="event-image-url"
-              type="url"
-              value={eventImageUrlInput}
-              onChange={(e) => setEventImageUrlInput(e.target.value)}
-              onBlur={handleEventImageUrlBlur}
-              placeholder="https://..."
-              className="mt-1"
+            <input
+              ref={imageFileRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                e.target.value = "";
+                if (file) void runEmbed(() => imageBlobToDataUrl(file));
+              }}
             />
+            <div className="flex gap-1 mt-1">
+              {isEmbedded ? (
+                <div
+                  id="event-image-url"
+                  className="flex-1 h-9 px-3 flex items-center rounded-md border border-input text-xs text-muted-foreground"
+                  title="The image is stored inside the event file"
+                >
+                  Embedded image ({formatDataUrlInfo(eventImageUrlInput)})
+                </div>
+              ) : (
+                <Input
+                  id="event-image-url"
+                  type="url"
+                  value={eventImageUrlInput}
+                  onChange={(e) => setEventImageUrlInput(e.target.value)}
+                  onBlur={() => {
+                    setAllowedRemoteImage(eventImageUrlInput); // the user's own address
+                    handleEventImageUrlBlur();
+                  }}
+                  placeholder="https://"
+                />
+              )}
+              {!isEmbedded && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  disabled={!canEmbedFromUrl || imageBusy}
+                  onClick={() => void runEmbed(() => embedImageFromUrl(eventImageUrlInput))}
+                  title="Embed: download the image from this address and store it in the event file"
+                  aria-label="Embed image from URL"
+                >
+                  {imageBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageDown className="h-4 w-4" />}
+                </Button>
+              )}
+              <Button
+                variant="outline"
+                size="icon"
+                className="h-9 w-9 shrink-0"
+                disabled={imageBusy}
+                onClick={() => imageFileRef.current?.click()}
+                title="Choose an image file and store it in the event file (large images are downscaled)"
+                aria-label="Choose image file"
+              >
+                <ImagePlus className="h-4 w-4" />
+              </Button>
+              {isEmbedded && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="h-9 w-9 shrink-0"
+                  onClick={() => commitEventImage("")}
+                  title="Remove the embedded image"
+                  aria-label="Remove embedded image"
+                >
+                  <X className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+            {imageError && <p className="text-[11px] text-destructive mt-1">{imageError}</p>}
           </div>
 
           <div>
             <Label htmlFor="map-download-url" className="text-xs text-muted-foreground">
-              {"Event maps URL"}
+              {"Event maps download site"}
             </Label>
             <Input
               id="map-download-url"
@@ -116,7 +213,7 @@ export function EventPropertiesTab({
               value={mapDownloadUrlInput}
               onChange={(e) => setMapDownloadUrlInput(e.target.value)}
               onBlur={handleMapDownloadUrlBlur}
-              placeholder="https://..."
+              placeholder="https://"
               className="mt-1"
             />
           </div>
@@ -150,10 +247,21 @@ export function EventPropertiesTab({
 
         {(eventImageUrlInput || eventUrlInput || mapDownloadUrlInput) && (
           <div className="flex-1 max-w-sm">
-            {eventImageUrlInput && (
+            {eventImageUrlInput && !showImage && (
+              <button
+                type="button"
+                className="w-full border border-dashed rounded-md p-4 text-xs text-muted-foreground hover:text-foreground hover:bg-muted/30"
+                onClick={() => setAllowedRemoteImage(eventImageUrlInput)}
+                title="Loading the image contacts that site, which can see your IP address"
+              >
+                Show image from {remoteHost || "the web"}
+              </button>
+            )}
+            {showImage && (
               <>
                 <div className="border rounded-md overflow-hidden bg-muted/20">
                   <img
+                    referrerPolicy="no-referrer"
                     src={eventImageUrlInput}
                     alt="Event preview"
                     className="w-full h-auto object-contain"

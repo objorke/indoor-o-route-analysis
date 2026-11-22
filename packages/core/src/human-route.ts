@@ -25,6 +25,15 @@ import { computeSameFloorClusters } from "./graph-clusters";
 import { straightLineDistanceMeters } from "./utils/geometry";
 import { edgeKey } from "./utils/graph-utils";
 
+/**
+ * Label the search gives an unlabeled one-way passage (a one-way door or
+ * corridor). Such a passage separates two floor regions just like a stair
+ * does, so it is a planning step in its own right, but it has no label on
+ * the map. Shown as-is in label sequences and map badges; the narration
+ * spells it out (see human-route-explanation.ts).
+ */
+export const ONE_WAY_PASSAGE_LABEL = "→";
+
 /** Which side of the bidirectional search a trace step belongs to. */
 export type HumanRouteSide = "tracking" | "backtracking";
 
@@ -291,12 +300,17 @@ export function findHumanRoute(
   };
 
   for (const edge of edges) {
-    const hasLabel = edge.label && edge.label !== "";
-    if (!hasLabel) continue;
+    const hasLabel = !!edge.label && edge.label !== "";
+    // An unlabeled one-way passage is a seam between floor regions too (see
+    // graph-clusters.ts): without it as a cluster edge, a leg that needs
+    // both a one-way passage and a stair has no plan at all.
+    if (!hasLabel && !edge.oneWay) continue;
 
     const fromCluster = uf.find(edge.from);
     const toCluster = uf.find(edge.to);
-    const label = edge.label || "";
+    // Both ends in one region: crossing it never opens a new region.
+    if (fromCluster === toCluster) continue;
+    const label = hasLabel ? edge.label : ONE_WAY_PASSAGE_LABEL;
 
     addClusterEdge({ fromCluster, toCluster, fromNode: edge.from, toNode: edge.to, label, edgeId: edgeKey(edge) });
 
@@ -386,11 +400,14 @@ export function findHumanRoute(
   const meetingAttempts: HumanRouteMeetingAttempt[] = [];
   let traceOrder = 0;
 
-  const straightLineToTarget = (nodeId: string): number => {
+  // "Goal direction": how far a candidate leaves this side from where it is
+  // heading. Tracking heads for the target; backtracking works from the
+  // target toward the start, so its goal is the start.
+  const straightLineToGoal = (nodeId: string, side: SearchSide): number => {
     const node = resolveNode(nodeId);
-    const target = resolveNode(toNodeId);
-    if (!node || !target) return Number.POSITIVE_INFINITY;
-    return straightLineDistanceMeters(getCoordinates(node), getCoordinates(target), mapScale);
+    const goal = resolveNode(side === "forward" ? toNodeId : fromNodeId);
+    if (!node || !goal) return Number.POSITIVE_INFINITY;
+    return straightLineDistanceMeters(getCoordinates(node), getCoordinates(goal), mapScale);
   };
 
   const buildRouteFromMeeting = (
@@ -499,13 +516,13 @@ export function findHumanRoute(
       .filter((candidate) => !!candidate.reachable && !visited.has(candidate.nextCluster))
       .sort((a, b) => {
         if (orderingWeights) {
-          const scoreA = orderingWeights.nearness * a.reachable!.distance + orderingWeights.goalDirection * straightLineToTarget(a.nextNode);
-          const scoreB = orderingWeights.nearness * b.reachable!.distance + orderingWeights.goalDirection * straightLineToTarget(b.nextNode);
+          const scoreA = orderingWeights.nearness * a.reachable!.distance + orderingWeights.goalDirection * straightLineToGoal(a.nextNode, side);
+          const scoreB = orderingWeights.nearness * b.reachable!.distance + orderingWeights.goalDirection * straightLineToGoal(b.nextNode, side);
           return scoreA - scoreB;
         }
         const byDistance = (a.reachable!.distance - b.reachable!.distance);
         if (byDistance !== 0) return byDistance;
-        return straightLineToTarget(a.nextNode) - straightLineToTarget(b.nextNode);
+        return straightLineToGoal(a.nextNode, side) - straightLineToGoal(b.nextNode, side);
       });
 
     if (candidates.length > 0) {
@@ -525,13 +542,29 @@ export function findHumanRoute(
       });
     }
 
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const candidate = candidates[i];
+    // Several candidates can lead to the same region (two stairs between
+    // the same pair of floors). The region is opened once, through the
+    // preferred one; the others stay visible in the trace as considered.
+    const opened: typeof candidates = [];
+    for (const candidate of candidates) {
+      if (visited.has(candidate.nextCluster)) continue;
       hooks?.onEdgeEvaluated?.(candidate.edge.fromNode, candidate.edge.toNode, true, candidate.reachable!.distance);
       visited.add(candidate.nextCluster);
       parentMap.set(candidate.nextCluster, { prevCluster: current.cluster, edge: candidate.edge });
-      stack.push({ cluster: candidate.nextCluster, node: candidate.nextNode, viaLabel: candidate.edge.label });
+      opened.push(candidate);
+    }
 
+    // Pushed in reverse so the preferred candidate is on top of the stack,
+    // i.e. the line of thought followed next.
+    for (let i = opened.length - 1; i >= 0; i--) {
+      const candidate = opened[i];
+      stack.push({ cluster: candidate.nextCluster, node: candidate.nextNode, viaLabel: candidate.edge.label });
+    }
+
+    // Does one of them land where the other side has already been? Checked
+    // in preference order, so the plan closes through the candidate the
+    // human would look at first.
+    for (const candidate of opened) {
       if (otherVisited.has(candidate.nextCluster)) {
         const route = buildRouteFromMeeting(candidate.nextCluster);
         if (route) return route;

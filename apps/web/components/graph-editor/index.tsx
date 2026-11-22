@@ -31,11 +31,17 @@ export default function GraphEditor() {
   const activeMap = getActiveMap(selectedEvent ?? undefined, selectedCourseId);
   const { pdfUrl, isLoading: _isLoading } = usePdfUrl(activeMap, pdfBlobUrl);
 
-  const handleVerifyGraph = () => {
+  const runVerifyGraph = () => {
     if (mapViewerRef.current?.verifyGraph) {
       const results = mapViewerRef.current.verifyGraph();
       setFindings(results);
     }
+  };
+
+  /** The Verify graph button shows the validation panel (verifying now) or hides it again. */
+  const handleVerifyGraph = () => {
+    if (findings !== null) setFindings(null);
+    else runVerifyGraph();
   };
 
   const handleSelectFinding = (finding: GraphFinding) => {
@@ -53,7 +59,7 @@ export default function GraphEditor() {
       // But verifyGraph accesses refs which should be up to date after render.
       // We can use setTimeout.
       setTimeout(() => {
-        handleVerifyGraph();
+        runVerifyGraph();
       }, 100);
     }
   };
@@ -102,8 +108,10 @@ export default function GraphEditor() {
           showEdgeWeights={showEdgeWeights}
           onShowEdgeWeightsChange={setShowEdgeWeights}
           onVerifyGraph={handleVerifyGraph}
+          isVerifyPanelOpen={findings !== null}
           onClearGraph={() => mapViewerRef.current?.clearGraph?.()}
-          onConnectOverlappingControls={() => mapViewerRef.current?.connectOverlappingControls?.() ?? 0}
+          onConnectOverlapping={() => mapViewerRef.current?.connectOverlapping?.() ?? null}
+          onReverseSelectedEdge={() => mapViewerRef.current?.reverseSelectedEdge?.() ?? false}
           findings={findings}
           onSelectFinding={handleSelectFinding}
           onDeleteFinding={handleDeleteFinding}

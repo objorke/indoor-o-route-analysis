@@ -7,11 +7,6 @@ allowBuilds:
   esbuild: true
   sharp: true
 
-onlyBuiltDependencies:
-  - core-js
-  - esbuild
-  - sharp
-
 overrides:
   '@babel/core@<=7.29.0': '>=7.29.6'
   '@hono/node-server@<1.19.10': '>=1.19.10'

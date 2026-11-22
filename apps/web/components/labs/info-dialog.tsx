@@ -51,7 +51,7 @@ export default function LabsInfoDialog({
                 <li><strong>Most Difficult Legs (Controls):</strong> Analyzes routes between all pairs of controls and ranks them by difficulty score, using Dijkstra&apos;s shortest path algorithm.</li>
                 <li><strong>Most Difficult Legs (Nodes):</strong> Analyzes routes between all pairs of graph nodes, providing a broader view of difficult segments across the entire venue.</li>
                 <li><strong>Human Thinking Simulation:</strong> Simulates how a human competitor would find their way between two controls &mdash; short-circuiting on the same floor, otherwise exploring outward from both ends and reasoning about stairs one step at a time &mdash; and narrates the process.</li>
-                <li><strong>Clustered Graph:</strong> Groups the entire venue&apos;s graph into same-floor regions (nodes mutually reachable via ordinary corridors, without using any stairs) and colors the map accordingly, so you can see corridor connectivity at a glance.</li>
+                <li><strong>Clustered Graph:</strong> Groups the entire venue&apos;s graph into same-floor regions (nodes merge only through two-way edges within the same floor; nodes on different floors and one-way edges never merge, whatever the edge label) and colors the map accordingly, so you can see connectivity at a glance.</li>
               </ul>
             </div>
 
@@ -91,6 +91,8 @@ export default function LabsInfoDialog({
                 <li>Each following step is narrated concretely, e.g. "From control 3 on floor 1, we can reach stairs A, B and C. Let us try up A." — tracking steps start with "From" (where the human currently stands); backtracking steps are prefixed "Backtracking: " and start with "To" (where the plan is trying to reach), naming the floor the candidate stair leads from, e.g. "Backtracking: To control 4 on floor 3, we can come from stairs A, B and C. Let us try up A from floor 2."</li>
                 <li>The map overlay shows only the current step: the tracking/backtracking routes committed so far, every candidate stair's entry-point badge (numbered, in its own distinct color matching the candidate's position in the explanation text's stair list), and the chosen (top-ranked) candidate's real corridor path (not a straight line) — all four highlighted with the same white halo/glow used elsewhere on the map. A green ring marks an accepted meeting between the two sides; a red dashed ring marks a rejected one. The final route, once the plan closes, is drawn in the same blue/amber split so you can see exactly how much of it each side contributed.</li>
                 <li>The <strong>Short-term memory</strong> panel shows, for the current step, the stair sequence already committed on each side (tracking from the start, backtracking from the control) and which untried alternatives are still being held as fallbacks &mdash; this only appears while stepping through exploration, since nothing is left to remember once the plan closes.</li>
+                <li>A one-way passage without a label (a one-way door or corridor) is a planning step like a stair. It is narrated as "the one-way passage" and shown as <strong>&rarr;</strong> in the plan and on the map.</li>
+                <li>Stairs are tried nearest first. When several candidates connect to what the other side has already found, the plan closes through the nearest one.</li>
                 <li>The <strong>Thinking effort</strong> panel summarizes mental steps, candidates evaluated, rejected meetings, plan depth, and how much longer the human route is than the optimal shortest path.</li>
                 <li>Click <Download className={iconClass} /><strong>JSON</strong> or <strong>Markdown</strong> to export the full trace and explanation for later reference.</li>
               </ol>
@@ -101,9 +103,10 @@ export default function LabsInfoDialog({
               <ol className="list-decimal list-inside space-y-1 ml-2">
                 <li>Select the Clustered Graph lab.</li>
                 <li>Click <strong>Run Clustering</strong>. Every node and edge is drawn at its real position (not an abstract diagram), tinted by which same-floor cluster it belongs to. A translucent rounded "blob" is drawn behind each cluster's nodes so the floor region reads as one area.</li>
-                <li>Stair edges (the seams between clusters) are drawn as neutral dashed lines regardless of which clusters they connect, distinct from same-floor corridors. One-way edges of either kind show a small direction chevron.</li>
+                <li>Floors come from the floor polygons each node lies in, so a cluster never covers two floors. Only floor changes and one-way edges separate clusters; labels and zero-length flags are ignored. Nodes outside every polygon only merge with each other.</li>
+                <li>Edges between clusters (stairs, floor changes, one-way passages) are drawn as neutral dashed lines, distinct from same-floor corridors. One-way edges of either kind show a small direction chevron.</li>
                 <li>The panel lists every cluster with its color swatch.</li>
-                <li>Click <Download className={iconClass} /><strong>Mermaid (.mmd)</strong> to export the condensed cluster graph (one node per cluster, one directed edge per traversable direction of each stair) for use in a Mermaid renderer.</li>
+                <li>Click <Download className={iconClass} /><strong>Mermaid (.mmd)</strong> to export the condensed cluster graph (one node per cluster, one directed edge per traversable direction of each edge between clusters) for use in a Mermaid renderer.</li>
               </ol>
             </div>
 

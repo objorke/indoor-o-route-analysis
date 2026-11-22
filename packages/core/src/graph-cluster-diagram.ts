@@ -2,7 +2,7 @@
  * Builds the condensed cluster graph (see graph-clusters.ts and
  * articles/graph-based-indoor-o-analysis.tex, "Cluster condensation") as a
  * Mermaid flowchart: one node per cluster, one directed edge per
- * traversable direction of each stair or one-way passage - matching the
+ * traversable direction of each edge between clusters (stair or one-way passage) - matching the
  * article's model exactly (a two-way stair is two separate directed
  * edges, not one bidirectional line).
  */
@@ -20,12 +20,12 @@ export interface ClusterGraphEdge {
 export function computeClusterGraphEdges(edges: Edge[], clusterOf: Record<string, string>): ClusterGraphEdge[] {
   const result: ClusterGraphEdge[] = [];
   for (const edge of edges) {
-    if (!edge.label) continue; // unlabeled edges are collapsed into clusters, not shown as cluster-graph edges
     const fromCluster = clusterOf[edge.from];
     const toCluster = clusterOf[edge.to];
     if (fromCluster === undefined || toCluster === undefined) continue;
+    if (fromCluster === toCluster) continue; // inside one cluster, not a cluster-graph edge
 
-    result.push({ from: fromCluster, to: toCluster, label: edge.label, oneWay: !!edge.oneWay });
+    result.push({ from: fromCluster, to: toCluster, label: edge.label ?? "", oneWay: !!edge.oneWay });
     if (!edge.oneWay) {
       result.push({ from: toCluster, to: fromCluster, label: edge.reverseLabel || edge.label, oneWay: false });
     }
@@ -44,7 +44,8 @@ export function clusterGraphToMermaid(clusters: string[], edges: ClusterGraphEdg
     lines.push(`    ${name}["${name}"]`);
   }
   for (const edge of edges) {
-    lines.push(`    ${nameOf(edge.from)} -->|${edge.label}| ${nameOf(edge.to)}`);
+    const arrow = edge.label ? `-->|${edge.label}|` : "-->";
+    lines.push(`    ${nameOf(edge.from)} ${arrow} ${nameOf(edge.to)}`);
   }
   return lines.join("\n");
 }

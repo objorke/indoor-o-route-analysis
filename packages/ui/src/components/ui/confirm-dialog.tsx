@@ -30,7 +30,7 @@ export default function ConfirmDialog({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-      <div className="bg-background border border-border rounded-lg max-w-sm w-full mx-4 shadow-lg">
+      <div role="alertdialog" aria-modal="true" aria-label={title} className="bg-background border border-border rounded-lg max-w-sm w-full mx-4 shadow-lg">
         <div className="flex items-center justify-between px-4 py-3 border-b border-border">
           <h3 className="text-md font-semibold">{title}</h3>
           <Button
@@ -45,7 +45,7 @@ export default function ConfirmDialog({
         <div className="p-4">
           <p className="text-sm text-muted-foreground">{message}</p>
         </div>
-        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-gray-50/50">
+        <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border bg-muted/30">
           <Button variant="outline" size="sm" onClick={onCancel}>
             {cancelLabel}
           </Button>

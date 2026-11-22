@@ -2,7 +2,7 @@
 import type { EventData, RouteInfo, TraceEvent } from "@indoor-o-route-analysis/core";
 import {
   getDifficultyCategory,
-  RouteAnalyzer,
+  createEventRouteAnalyzer,
   ScoringModelRegistry,
   TraceRecorder,
 } from "@indoor-o-route-analysis/core";
@@ -283,12 +283,10 @@ async function main(): Promise<void> {
   const controls = raceCourse.controls || [];
   const vertices = raceCourse.vertices || [];
   const edges = raceCourse.edges || [];
-  const polygons = raceCourse.polygons || [];
-  const mapScale = raceCourse.maps?.[0]?.scale || 1000;
   const scoringModel = ScoringModelRegistry.getModelOrDefault(args.scoringModel);
 
   const recorder = new TraceRecorder();
-  const analyzer = new RouteAnalyzer(controls, vertices, edges, mapScale, scoringModel, polygons, recorder);
+  const analyzer = createEventRouteAnalyzer(event, { scoringModel, visualizer: recorder });
 
   console.error(`Searching for routes ${fromControlId} → ${toControlId}...`);
   const foundRoutes = analyzer.findAllAlternativePathsBetweenControls(fromControlId, toControlId, args.maxRoutes);
@@ -327,7 +325,7 @@ async function main(): Promise<void> {
   let humanEvents: TraceEvent[] = [];
   if (args.exportPhases.includes("human")) {
     const humanRecorder = new TraceRecorder();
-    const humanAnalyzer = new RouteAnalyzer(controls, vertices, edges, mapScale, scoringModel, polygons, humanRecorder);
+    const humanAnalyzer = createEventRouteAnalyzer(event, { scoringModel, visualizer: humanRecorder });
     human = humanAnalyzer.findHumanRouteBetweenControls(fromControlId, toControlId);
     humanEvents = humanRecorder.events;
     if (human) {

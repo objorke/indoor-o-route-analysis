@@ -1,14 +1,17 @@
-import { Download } from "lucide-react";
-import { Button } from "@indoor-o-route-analysis/ui";
+import { useEffect, useState } from "react";
+import { Download, Trash2 } from "lucide-react";
+import { Button, ConfirmDialog } from "@indoor-o-route-analysis/ui";
 import type { Control } from "@indoor-o-route-analysis/core";
 import type { Course } from "@indoor-o-route-analysis/core";
 import type { Polygon } from "@indoor-o-route-analysis/core";
-import { findPolygonForPoint } from "@indoor-o-route-analysis/core";
+import { findPolygonForPoint, getCoursesUsingControl } from "@indoor-o-route-analysis/core";
 
 interface ControlsTabProps {
   controls: Control[];
   courses: Course[];
   polygons: Polygon[];
+  /** Delete a control everywhere (courses and graph edges included). */
+  onDeleteControl?: (controlId: string) => void;
 }
 
 interface ControlRow {
@@ -22,7 +25,40 @@ interface ControlRow {
   totalRunners: number;
 }
 
-export function ControlsTab({ controls, courses, polygons }: ControlsTabProps) {
+export function ControlsTab({ controls, courses, polygons, onDeleteControl }: ControlsTabProps) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ id: string; message: string } | null>(null);
+
+  /** Delete immediately when unused; otherwise ask first. */
+  const requestDelete = (id: string) => {
+    if (!onDeleteControl) return;
+    const using = getCoursesUsingControl(courses, id);
+    if (using.length === 0) {
+      onDeleteControl(id);
+      if (selectedId === id) setSelectedId(null);
+      return;
+    }
+    const names = using.map((c) => c.name).join(", ");
+    setPendingDelete({
+      id,
+      message: `Control ${id} is used in ${using.length} course${using.length === 1 ? "" : "s"} (${names}). Delete it and remove it from ${using.length === 1 ? "that course" : "those courses"}?`,
+    });
+  };
+
+  // Delete/Backspace deletes the selected row
+  useEffect(() => {
+    if (!selectedId || !onDeleteControl) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (["INPUT", "TEXTAREA", "SELECT"].includes(t.tagName) || t.isContentEditable) return;
+      if (e.key !== "Delete" && e.key !== "Backspace") return;
+      e.preventDefault();
+      requestDelete(selectedId);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
   // Calculate control usage across courses
   const controlUsage = new Map<string, { courses: string[]; runners: number }>();
 
@@ -133,11 +169,16 @@ export function ControlsTab({ controls, courses, polygons }: ControlsTabProps) {
                   <th className="text-right px-3 py-2 font-medium bg-muted/50">{"Elevation (m)"}</th>
                   <th className="text-left px-3 py-2 font-medium bg-muted/50">{"Used In"}</th>
                   <th className="text-right px-3 py-2 font-medium bg-muted/50">{"Total Runners"}</th>
+                  {onDeleteControl && <th className="w-8 bg-muted/50" />}
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row) => (
-                  <tr key={row.id} className="border-t border-border/60">
+                  <tr
+                    key={row.id}
+                    className={`border-t border-border/60 cursor-pointer ${selectedId === row.id ? "bg-primary/15" : "hover:bg-muted/30"}`}
+                    onClick={() => setSelectedId(selectedId === row.id ? null : row.id)}
+                  >
                     <td className="px-3 py-2 align-middle font-mono">{row.id}</td>
                     <td className="px-3 py-2 align-middle capitalize">{row.type}</td>
                     <td className="px-3 py-2 align-middle text-right font-mono text-xs">{row.x}</td>
@@ -152,6 +193,23 @@ export function ControlsTab({ controls, courses, polygons }: ControlsTabProps) {
                       {row.usedIn || "-"}
                     </td>
                     <td className="px-3 py-2 align-middle text-right">{row.totalRunners}</td>
+                    {onDeleteControl && (
+                      <td className="px-1 py-1 align-middle text-right">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-6 w-6 text-muted-foreground hover:text-destructive"
+                          title="Delete control (Delete)"
+                          aria-label={`Delete control ${row.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            requestDelete(row.id);
+                          }}
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </td>
+                    )}
                   </tr>
                 ))}
               </tbody>
@@ -159,6 +217,20 @@ export function ControlsTab({ controls, courses, polygons }: ControlsTabProps) {
           </div>
         )}
       </div>
+      <ConfirmDialog
+        isOpen={!!pendingDelete}
+        title="Delete control"
+        message={pendingDelete?.message ?? ""}
+        confirmLabel="Delete"
+        onCancel={() => setPendingDelete(null)}
+        onConfirm={() => {
+          if (pendingDelete) {
+            onDeleteControl?.(pendingDelete.id);
+            if (selectedId === pendingDelete.id) setSelectedId(null);
+          }
+          setPendingDelete(null);
+        }}
+      />
     </div>
   );
 }

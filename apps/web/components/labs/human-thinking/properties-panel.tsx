@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { ScrollArea } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import {
-  RouteAnalyzer,
+  createEventRouteAnalyzer,
   getActualCourseControls,
   getCourseControlLabels,
   getCoordinates,
@@ -122,14 +122,13 @@ export default function HumanThinkingPanel({ onRouteSelect, onOverlayChange }: H
     const controls = raceCourse?.controls || [];
     const nodes = raceCourse?.vertices || [];
     const edges = raceCourse?.edges || [];
-    const scale = raceCourse?.maps?.[0]?.scale || 10000;
 
     if (edges.length === 0) {
-      setError("No graph edges found. Please create a graph in the Graph Editor first.");
+      setError("No graph edges found. Please create a graph in the Graph view first.");
       return;
     }
 
-    const analyzer = new RouteAnalyzer(controls, nodes, edges, scale, undefined, raceCourse?.polygons || []);
+    const analyzer = createEventRouteAnalyzer(selectedEvent);
     const fromControl = controls.find((c) => c.id === selectedLeg.fromControlId);
     const toControl = controls.find((c) => c.id === selectedLeg.toControlId);
 

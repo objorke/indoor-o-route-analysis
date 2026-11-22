@@ -1,6 +1,6 @@
 "use client"
 
-import { X, Box, Maximize2, Map as MapIcon, EyeOff, Info, Menu, Play, Pause, Square, Target, Layers, ArrowUpDown, Repeat, BarChart3, Brain, Split, Tractor } from "lucide-react";
+import { X, Box, Maximize2, Map as MapIcon, EyeOff, Info, Menu, Play, Pause, Square, Target, Layers, ArrowUpDown, Repeat, BarChart3, Brain, Split, Tractor, Rat } from "lucide-react";
 import { Button } from "@indoor-o-route-analysis/ui";
 
 interface RouteAnalysisInfoDialogProps {
@@ -87,7 +87,7 @@ export default function RouteAnalysisInfoDialog({
                   <Tractor className={iconClass} /><strong>Show all routes</strong> &mdash; Controls how alternative routes are found and filtered for each leg.
                   <ul className="list-disc list-inside ml-4 mt-1 space-y-0.5">
                     <li><strong>Off (default):</strong> Uses a heuristic search limited to <em>k</em> candidate routes. Routes that differ only in minor surface-level details (same stair sequence) are deduplicated, so each listed route represents a genuinely distinct path through the building.</li>
-                    <li><strong>On:</strong> Runs an exhaustive search that finds all reachable paths up to a hard cap. No deduplication is applied, so routes that share the same overall structure but differ in small local detours are all shown. This is useful for discovering edge-case paths but may produce many near-identical routes and is slower to compute.</li>
+                    <li><strong>On:</strong> Runs the enumeration algorithm selected in <em>Settings → Analysis → Find all routes algorithm</em> up to a hard cap, with no k-filtering. Useful for discovering edge-case paths, but it may produce many near-identical routes and is slower to compute. The algorithms: <strong>Cluster A* (default)</strong> enumerates every distinct stair sequence, shortest first; <strong>Basic DFS</strong> and <strong>Basic BFS</strong> enumerate every path that never revisits a node (depth-first / by hop count), so they also show corridor variations sharing a stair sequence, but are budget-capped on large venues; <strong>Penalised Dijkstra</strong> is the fastest but samples rather than enumerates, so it can miss alternatives. The current choice is shown in this button&apos;s tooltip.</li>
                   </ul>
                 </li>
                 <li><strong>Scoring model</strong> &mdash; Choose which difficulty scoring model to use for the analysis.</li>
@@ -97,6 +97,8 @@ export default function RouteAnalysisInfoDialog({
             <div>
               <p className="font-medium text-foreground mb-1">Route Information Icons</p>
               <ul className="space-y-1.5 ml-2">
+                <li><span className="mr-1">⭐</span><strong>Hardest leg</strong> &mdash; Marks the leg with the highest difficulty in the course.</li>
+                <li><Rat className={iconClass} /><strong>Trap</strong> &mdash; The shortest route is more difficult than a longer route, so the easiest route may be chosen even though a more difficult, shorter one exists. Only shown when the easiest route is more than 10% longer and more than 10% easier than the shortest. Hover the icon to see both routes&apos; distance and difficulty.</li>
                 <li><Brain className={iconClass} /><strong>Decision points</strong> &mdash; Number of meaningful junctions where the runner must choose a direction. Dead-end branches shorter than 50 m are excluded.</li>
                 <li><ArrowUpDown className={iconClass} /><strong>Stairs</strong> &mdash; Number of stair segments along the route.</li>
                 <li><Repeat className={iconClass} /><strong>Repetition</strong> &mdash; Ratio of how much of the route overlaps with previously visited segments.</li>

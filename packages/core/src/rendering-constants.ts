@@ -11,6 +11,12 @@ export const CONTROL_STROKE_WIDTH = 2;
 export const CONTROL_STROKE_WIDTH_SELECTED = 3;
 export const CONTROL_TEXT_SIZE = 24;
 export const START_TRIANGLE_RADIUS = CONTROL_RADIUS;
+/**
+ * Circumradius of the triangle drawn at a map exchange (change/flip) control.
+ * The triangle is inscribed in the control circle: its corners touch the
+ * circle, so the circumradius equals the control radius.
+ */
+export const MAP_EXCHANGE_TRIANGLE_RADIUS = CONTROL_RADIUS;
 export const FINISH_INNER_CIRCLE_RADIUS = CONTROL_RADIUS * 0.7;
 export const COURSE_COLOR = "#8b5cf6"; // Default purple for course
 export const SELECTED_COURSE_COLOR = "#c084fc";
@@ -59,9 +65,12 @@ export const ROUTE_ANALYSIS_COLORS = [
 ];
 /** The first ROUTE_ANALYSIS_COLORS entry, reused wherever a single "this is the route being played/shown" accent is needed outside route-analysis's own ranked palette (e.g. Route Builder's playback marker and 3D route view). */
 export const PRIMARY_ROUTE_COLOR = ROUTE_ANALYSIS_COLORS[0];
+/** Stroke width (px) of the primary (best/shown) route; alternatives are drawn slightly thinner. Shared by Route Analysis, Labs and Modify Graph. */
+export const PRIMARY_ROUTE_STROKE_WIDTH = 10;
+export const ALTERNATIVE_ROUTE_STROKE_WIDTH = 8;
 
 // Labs
-export const LABS_ROUTE_COLOR = "#22c55e"; // Green for labs route visualization
+export const LABS_ROUTE_COLOR = "#22c55e"; // Green accent in labs overlays (accepted meetings, route-viz "easiest route"); routes themselves use PRIMARY_ROUTE_COLOR
 
 // Labs — Human Thinking overlay (see planning/08-human-route-viz-web.md)
 export const HUMAN_OVERLAY_TRACKING_COLOR = "#3b82f6"; // Blue: visited by the forward/tracking side

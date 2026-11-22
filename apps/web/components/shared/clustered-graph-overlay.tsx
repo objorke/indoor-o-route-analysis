@@ -78,7 +78,7 @@ function Chevron({ x1, y1, x2, y2, color }: { x1: number; y1: number; x2: number
  * one visual area, not a scatter of dots), then every node and edge in its
  * real position (no abstraction into a cluster diagram) tinted by
  * same-floor cluster. Same-floor edges take their cluster's color;
- * cross-floor (labeled/stair) edges - the seams between clusters - are
+ * edges between clusters (stairs, one-way passages) - the seams between clusters - are
  * drawn in a neutral dashed style regardless of which clusters they join.
  * One-way edges (of either kind) get a midpoint direction chevron. Must be
  * placed inside an <svg> or <g>, alongside GraphOverlay conventions.
@@ -130,7 +130,7 @@ export function ClusteredGraphOverlay({ edges, nodes, clusterOf, clusterColors }
         const from = posById.get(edge.from);
         const to = posById.get(edge.to);
         if (!from || !to) return null;
-        const isSeam = !!edge.label;
+        const isSeam = clusterOf[edge.from] !== clusterOf[edge.to];
         const color = isSeam ? SEAM_COLOR : (clusterColors[clusterOf[edge.from]] ?? SEAM_COLOR);
         return (
           <g key={`clustered-edge-${i}`}>

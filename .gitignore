@@ -17,3 +17,6 @@ analysis-output/
 test-results/
 playwright-report/
 playwright/.cache/
+# Generated at build time by apps/web/scripts/generate-sw.mjs
+apps/web/public/sw.js
+apps/web/public/version.json

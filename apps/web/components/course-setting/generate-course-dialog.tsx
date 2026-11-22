@@ -7,6 +7,8 @@ import { Label } from "@indoor-o-route-analysis/ui";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@indoor-o-route-analysis/ui";
 import { useAppData } from "@indoor-o-route-analysis/ui";
 import type { Control, GenerationProgress } from "@indoor-o-route-analysis/core";
+import { updateRaceCourse } from "@indoor-o-route-analysis/core";
+import { notify } from "@indoor-o-route-analysis/ui";
 
 export interface GenerateParams {
   numControls: number;
@@ -22,7 +24,7 @@ interface GenerateCourseDialogProps {
 type GenerationProgressWithTime = GenerationProgress & { elapsedTime: number };
 
 export function GenerateCourseDialog({ onCourseGenerated }: GenerateCourseDialogProps) {
-  const { selectedEvent, updateEventData } = useAppData();
+  const { selectedEvent, updateEvent } = useAppData();
 
   const [showDialog, setShowDialog] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -46,11 +48,7 @@ export function GenerateCourseDialog({ onCourseGenerated }: GenerateCourseDialog
     const { CourseGenerator } = await import("@indoor-o-route-analysis/core");
 
     const controls = raceCourse.controls || [];
-    const nodes = raceCourse.vertices || [];
-    const edges = raceCourse.edges || [];
-    const scale = raceCourse.maps?.[0]?.scale || 1000;
-
-    const generator = new CourseGenerator(controls, nodes, edges, scale);
+    const generator = CourseGenerator.forEvent(selectedEvent);
 
     const result = await generator.generate(generateParams, (progress: GenerationProgress) => {
       const elapsedTime = Date.now() - startTime;
@@ -68,9 +66,9 @@ export function GenerateCourseDialog({ onCourseGenerated }: GenerateCourseDialog
       const finishControl = controls.find((c: Control) => c.type === "finish");
 
       if (!startControl || !finishControl) {
-        alert("Please define start and finish controls before generating a course.");
+        notify("Please define start and finish controls before generating a course.");
       } else {
-        alert(`Not enough controls. Need at least ${generateParams.numControls} intermediate controls.`);
+        notify(`Not enough controls. Need at least ${generateParams.numControls} intermediate controls.`);
       }
       return;
     }
@@ -97,14 +95,12 @@ export function GenerateCourseDialog({ onCourseGenerated }: GenerateCourseDialog
       mapId: raceCourse.maps?.[0]?.id || "",
     };
 
-    const updatedCourses = [...currentCourses, newCourse];
-    const raceCourses = selectedEvent.raceCourses ?? [];
-    const updatedRaceCourses = [...raceCourses];
-    updatedRaceCourses[0] = { ...raceCourse, courses: updatedCourses };
-
-    await updateEventData(selectedEvent.id, { raceCourses: updatedRaceCourses });
+    // Generation can take a while: append to the latest courses, not the ones from when it started
+    await updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => ({ ...rc, courses: [...(rc.courses ?? []), newCourse] })),
+    );
     onCourseGenerated?.(newCourseId);
-  }, [selectedEvent, raceCourse, generateParams, updateEventData, onCourseGenerated]);
+  }, [selectedEvent, raceCourse, generateParams, updateEvent, onCourseGenerated]);
 
   return (
     <>

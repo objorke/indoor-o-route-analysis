@@ -22,58 +22,7 @@ docker build -t indoor-o-route-analysis .
 docker run -p 3000:3000 indoor-o-route-analysis
 ```
 
-## Command-line tools
+## Example events
 
-Run difficulty analysis of all events in `./apps/web/public/examples` and outputs reports to `./output/route-analysis`:
-
-```
-pnpm analyse-all
-```
-
-Generate data for training app:
-
-```
-pnpm training 2023-02-04
-```
-
-Join runner splits with per-leg difficulty data:
-
-```
-pnpm splits
-```
-
-Run analyse-all, splits, and training in sequence:
-
-```
-pnpm update-all
-```
-
-Convert between JSON, IOF XML and CSV:
-
-```
-pnpm convert --help
-pnpm convert <input> --format json|xml|csv [-o <output>]
-```
-
-Command line tool to analyse legs:
-
-```
-pnpm analyse --help
-```
-
-Render a video visualization of the route-finding algorithms (shortest route,
-easiest route, all distinct routes) for a leg:
-
-```
-pnpm route-viz event.json --course "Course 1" --leg 3-4 --duration 20
-```
-
-For the MCP server, see the [README.md](apps/mcp-server/README.md)
-
-## Agent skills
-
-See the `skills` folder.
-
-## Self-improvement loop
-
-Claude Code can run autonomous improvement iterations on this repo via the `/self-improve [area]` skill (repeat with `/loop /self-improve`). Specialist agents live in `.claude/agents/`, the protocol in `.claude/skills/`, and the backlog/log in `TASKS.md`. Areas: algorithms, architecture, security, maintainability, docs, tests, features.
+File → Examples loads events from [objorke/indoor-o-data](https://github.com/objorke/indoor-o-data/tree/main/events).
+Add your own repositories (any `index.json` URL) in Settings → Examples. See [docs/example-repositories.md](docs/example-repositories.md).

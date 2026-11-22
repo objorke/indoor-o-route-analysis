@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from "react";
 import dynamic from "next/dynamic";
 import { useAppData } from "@indoor-o-route-analysis/ui";
-import { getActiveMap } from "@indoor-o-route-analysis/core";
+import { getActiveMap, updateRaceCourse } from "@indoor-o-route-analysis/core";
 import { usePdfUrl } from "@indoor-o-route-analysis/ui";
 import { usePlayback } from "@indoor-o-route-analysis/ui";
 import RouteBuilderPropertiesPanel from "./properties-panel";
@@ -11,7 +11,8 @@ import NewRouteDialog from "./new-route-dialog";
 import { VideoExportDialog, type VideoExportSettings } from "@/components/shared/video-export-dialog";
 import { ExportNaming } from "@indoor-o-route-analysis/core";
 import type { CustomRoute, RouteLeg, RouteLegNode } from "@indoor-o-route-analysis/core";
-import { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import type { RouteAnalyzer } from "@indoor-o-route-analysis/core";
+import { useEventRouteAnalyzer } from "@indoor-o-route-analysis/ui";
 import { GpxGenerator } from "@indoor-o-route-analysis/core";
 import { getCourseControlLabels, getActualCourseControls } from "@indoor-o-route-analysis/core";
 import { findPolygonForPoint } from "@indoor-o-route-analysis/core";
@@ -19,6 +20,7 @@ import { PRIMARY_ROUTE_COLOR } from "@indoor-o-route-analysis/core";
 
 import type { RouteBuilderMapViewerHandle } from "./map-viewer";
 import type { RouteAnalysisModelViewerHandle } from "@/components/route-analysis/model-viewer";
+import { notify, confirmAction } from "@indoor-o-route-analysis/ui";
 
 const RouteBuilderMapViewer = dynamic(() => import("./map-viewer"), {
   ssr: false,
@@ -60,7 +62,7 @@ function tryMergeOldLegs(fromId: string, toId: string, oldLegs: RouteLeg[]): Rou
 }
 
 export default function RouteBuilder() {
-  const { selectedEvent, updateEventData, pdfBlobUrl, runningSpeed } = useAppData();
+  const { selectedEvent, updateEvent, pdfBlobUrl, runningSpeed } = useAppData();
   const [selectedRoute, setSelectedRoute] = useState<CustomRoute | null>(null);
   const [selectedLegIndex, setSelectedLegIndex] = useState<number | null>(null);
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
@@ -87,6 +89,18 @@ export default function RouteBuilder() {
   const activeMap = getActiveMap(selectedEvent ?? undefined, selectedRoute?.courseId ?? null);
   const raceCourse = selectedEvent?.raceCourses?.[0];
   const routes = useMemo(() => raceCourse?.customRoutes || [], [raceCourse?.customRoutes]);
+  // Keep the selected route in step with the event (e.g. after undo): refresh it, or clear it when gone
+  useEffect(() => {
+    if (!selectedRoute) return;
+    const current = routes.find((r) => r.id === selectedRoute.id);
+    if (!current) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- syncing selection with event data
+      setSelectedRoute(null);
+      setSelectedLegIndex(null);
+    } else if (current !== selectedRoute) {
+      setSelectedRoute(current);
+    }
+  }, [routes, selectedRoute]);
   const nodes = useMemo(() => raceCourse?.vertices || [], [raceCourse?.vertices]);
   const edges = useMemo(() => raceCourse?.edges || [], [raceCourse?.edges]);
   const controls = useMemo(() => raceCourse?.controls || [], [raceCourse?.controls]);
@@ -111,14 +125,7 @@ export default function RouteBuilder() {
   }, [playback]);
 
   // Initialize RouteAnalyzer
-  const routeAnalyzer = useMemo(() => selectedEvent ? new RouteAnalyzer(
-    controls,
-    nodes,
-    edges,
-    activeMap?.scale ?? 1000,
-    undefined,
-    polygons
-  ) : null, [selectedEvent, controls, nodes, edges, activeMap?.scale, polygons]);
+  const routeAnalyzer = useEventRouteAnalyzer(selectedEvent, { courseId: selectedRoute?.courseId ?? null });
 
   // Calculate leg time based on timing points and remaining distance
   const calculateLegTime = useCallback((leg: RouteLeg, routeAnalyzer: RouteAnalyzer | null): number => {
@@ -241,7 +248,7 @@ export default function RouteBuilder() {
   // Open new route dialog
   const handleNewRoute = useCallback(() => {
     if (!selectedEvent || !raceCourse || courses.length === 0) {
-      alert("Please select an event and create at least one course first.");
+      notify("Please select an event and create at least one course first.");
       return;
     }
     setShowNewRouteDialog(true);
@@ -279,19 +286,19 @@ export default function RouteBuilder() {
     }
 
     // Save the new route
-    const updatedRoutes = [...routes, newRoute];
-    const updatedRaceCourse = {
-      ...raceCourse,
-      customRoutes: updatedRoutes,
-    };
-
-    updateEventData(selectedEvent.id, {
-      raceCourses: [updatedRaceCourse, ...(selectedEvent.raceCourses?.slice(1) || [])],
-    });
+    // Applied to the latest routes, so edits made meanwhile are kept
+    updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => {
+        const latest = rc.customRoutes ?? [];
+        return { ...rc, customRoutes: [...latest, newRoute] };
+      }),
+      undefined,
+      { label: "New route" },
+    );
 
     setSelectedRoute(newRoute);
     setSelectedLegIndex(null);
-  }, [selectedEvent, raceCourse, courses, routes, controls, updateEventData]);
+  }, [selectedEvent, raceCourse, courses, routes, controls, updateEvent]);
 
   // Handle duplicate route
   const handleDuplicateRoute = useCallback((route: CustomRoute) => {
@@ -305,40 +312,40 @@ export default function RouteBuilder() {
       legs: route.legs.map(leg => ({ ...leg })),
     };
 
-    const updatedRoutes = [...routes, duplicatedRoute];
-    const updatedRaceCourse = {
-      ...raceCourse,
-      customRoutes: updatedRoutes,
-    };
-
-    updateEventData(selectedEvent.id, {
-      raceCourses: [updatedRaceCourse, ...(selectedEvent.raceCourses?.slice(1) || [])],
-    });
+    // Applied to the latest routes, so edits made meanwhile are kept
+    updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => {
+        const latest = rc.customRoutes ?? [];
+        return { ...rc, customRoutes: [...latest, duplicatedRoute] };
+      }),
+      undefined,
+      { label: "Duplicate route" },
+    );
 
     setSelectedRoute(duplicatedRoute);
-  }, [selectedEvent, raceCourse, routes, updateEventData]);
+  }, [selectedEvent, raceCourse, routes, updateEvent]);
 
   // Handle delete route
-  const handleDeleteRoute = useCallback((routeId: string) => {
+  const handleDeleteRoute = useCallback(async (routeId: string) => {
     if (!selectedEvent || !raceCourse) return;
 
-    if (!confirm("Are you sure you want to delete this route?")) return;
+    if (!(await confirmAction("Delete this route? You can undo this with Ctrl/Cmd+Z.", { title: "Delete route", confirmLabel: "Delete", destructive: true }))) return;
 
-    const updatedRoutes = routes.filter((r) => r.id !== routeId);
-    const updatedRaceCourse = {
-      ...raceCourse,
-      customRoutes: updatedRoutes,
-    };
-
-    updateEventData(selectedEvent.id, {
-      raceCourses: [updatedRaceCourse, ...(selectedEvent.raceCourses?.slice(1) || [])],
-    });
+    // Applied to the latest routes, so edits made meanwhile are kept
+    updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => {
+        const latest = rc.customRoutes ?? [];
+        return { ...rc, customRoutes: latest.filter((r) => r.id !== routeId) };
+      }),
+      undefined,
+      { label: "Delete route" },
+    );
     
     if (selectedRoute?.id === routeId) {
       setSelectedRoute(null);
       setSelectedLegIndex(null);
     }
-  }, [selectedEvent, raceCourse, routes, updateEventData, selectedRoute]);
+  }, [selectedEvent, raceCourse, routes, updateEvent, selectedRoute]);
 
   // Handle route change
   const handleRouteChange = useCallback((updatedRoute: CustomRoute) => {
@@ -348,16 +355,16 @@ export default function RouteBuilder() {
     setSelectedRoute(updatedRoute);
 
     // Update the route in the list (global state)
-    const updatedRoutes = routes.map((r) => (r.id === updatedRoute.id ? updatedRoute : r));
-    const updatedRaceCourse = {
-      ...raceCourse,
-      customRoutes: updatedRoutes,
-    };
-
-    updateEventData(selectedEvent.id, {
-      raceCourses: [updatedRaceCourse, ...(selectedEvent.raceCourses?.slice(1) || [])],
-    });
-  }, [selectedEvent, raceCourse, routes, updateEventData]);
+    // Applied to the latest routes, so edits made meanwhile are kept
+    updateEvent(selectedEvent.id, (e) =>
+      updateRaceCourse(e, (rc) => {
+        const latest = rc.customRoutes ?? [];
+        return { ...rc, customRoutes: latest.map((r) => (r.id === updatedRoute.id ? updatedRoute : r)) };
+      }),
+      undefined,
+      { label: "Edit route" },
+    );
+  }, [selectedEvent, raceCourse, routes, updateEvent]);
 
   // Update course controls for an existing route, preserving timing points
   const handleUpdateCourseForRoute = useCallback((route: CustomRoute) => {
@@ -807,7 +814,7 @@ export default function RouteBuilder() {
         console.log("Video export cancelled");
       } else {
         console.error("Video export error:", err);
-        alert("Video export failed: " + (err instanceof Error ? err.message : String(err)));
+        notify("Video export failed: " + (err instanceof Error ? err.message : String(err)), { kind: "error" });
       }
     } finally {
       setIsExportingVideo(false);
@@ -924,7 +931,7 @@ export default function RouteBuilder() {
             />
           ) : (
             <div className="flex-1 flex items-center justify-center text-muted-foreground">
-              No map available. Please configure a map in Event Manager.
+              No map available. Please configure a map in Event → Map.
             </div>
           )
         ) : (

@@ -16,7 +16,7 @@ pnpm start [fileFilter] [inputFolder] [outputFolder] [--k <n>] [--verbose]
 | Argument       | Default                                        | Description                                          |
 | -------------- | ---------------------------------------------- | ---------------------------------------------------- |
 | `fileFilter`   | (none)                                         | Only process files containing this string            |
-| `inputFolder`  | `../web/public/examples`                       | Folder containing event JSON files                   |
+| `inputFolder`  | `../../test-data/events`                       | Folder containing event JSON files                   |
 | `outputFolder` | `../../output/training-data`                   | Folder for output training JSON files                |
 | `--k <n>`      | `50`                                           | Max routes (per-leg cap) for the route enumeration   |
 | `--verbose`    | (off)                                          | Print number of routes found for each leg            |
@@ -34,7 +34,7 @@ pnpm start 2026 --verbose
 pnpm start "" ./input ./output --k 50
 
 # Custom folders with 50 max paths
-pnpm start "" ../web/public/examples ../../../indoor-o-training-v0/public/examples
+pnpm start "" ../../test-data/events ../../../indoor-o-training-v0/public/examples
 ```
 
 ## Output

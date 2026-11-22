@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findHumanRoute, type HumanRouteGraphContext } from "./human-route";
+import { findHumanRoute, ONE_WAY_PASSAGE_LABEL, type HumanRouteGraphContext } from "./human-route";
 import type { Node, Edge } from "./models/graph";
 
 function node(id: string, x: number, y: number): Node {
@@ -312,5 +312,96 @@ describe("findHumanRoute — configurable candidate ordering (HumanModelParams)"
       params: { orderingWeights: { nearness: 1, goalDirection: 1000 } },
     });
     expect(result!.trace.steps[0].candidates[0].label).toBe("Y");
+  });
+});
+
+describe("findHumanRoute — unlabeled one-way passages", () => {
+  // R1{S,A} =one-way=> R2{B,C} -stair 1- R3{D,T}. The one-way passage is the
+  // only way out of R1, so the plan needs it as a step of its own.
+  const nodes = [
+    node("S", 0, 0), node("A", 10, 0),
+    node("B", 12, 0), node("C", 30, 0),
+    node("D", 30, 100), node("T", 40, 100),
+  ];
+  const edges: Edge[] = [
+    { from: "S", to: "A", label: "" },
+    { from: "A", to: "B", label: "", oneWay: true },
+    { from: "B", to: "C", label: "" },
+    { from: "C", to: "D", label: "1", reverseLabel: "1", ignoreLength: true },
+    { from: "D", to: "T", label: "" },
+  ];
+
+  it("plans a leg that needs a one-way passage and a stair", () => {
+    const result = findHumanRoute("S", "T", makeContext(nodes, edges));
+    expect(result).not.toBeNull();
+    expect(result!.sameFloor).toBe(false);
+    expect(result!.path).toEqual(["S", "A", "B", "C", "D", "T"]);
+    expect([...result!.forwardLabels, ...result!.backwardLabels]).toEqual([ONE_WAY_PASSAGE_LABEL, "1"]);
+  });
+
+  it("does not plan through the passage against its direction", () => {
+    expect(findHumanRoute("T", "S", makeContext(nodes, edges))).toBeNull();
+  });
+
+  it("ignores a one-way passage whose two ends are in the same region", () => {
+    const loop: Edge[] = [...edges, { from: "S", to: "A", label: "", oneWay: true }];
+    const result = findHumanRoute("S", "T", makeContext(nodes, loop));
+    expect(result!.trace.steps[0].candidates.map((c) => c.label)).toEqual([ONE_WAY_PASSAGE_LABEL]);
+  });
+});
+
+describe("findHumanRoute — closing the plan", () => {
+  // Two complete routes: S -1-> F2 -2-> T and S -3-> F4 -4-> T. Stairs 1 and
+  // 2 are the near ones on their side, 3 and 4 the far ones.
+  const nodes = [
+    node("S", 0, 0), node("A", 5, 0), node("far1", 200, 0),
+    node("B", 5, 100), node("C", 15, 100),
+    node("X", 200, 300), node("Y", 210, 300),
+    node("D", 15, 200), node("T", 20, 200), node("far3", 210, 200),
+  ];
+  const edges: Edge[] = [
+    { from: "S", to: "A", label: "" },
+    { from: "A", to: "far1", label: "" },
+    { from: "B", to: "C", label: "" },
+    { from: "X", to: "Y", label: "" },
+    { from: "D", to: "T", label: "" },
+    { from: "T", to: "far3", label: "" },
+    { from: "A", to: "B", label: "1", reverseLabel: "1", ignoreLength: true },
+    { from: "C", to: "D", label: "2", reverseLabel: "2", ignoreLength: true },
+    { from: "far1", to: "X", label: "3", reverseLabel: "3", ignoreLength: true },
+    { from: "Y", to: "far3", label: "4", reverseLabel: "4", ignoreLength: true },
+  ];
+
+  it("closes through the preferred candidate when several of them meet the other side", () => {
+    const result = findHumanRoute("S", "T", makeContext(nodes, edges));
+    // Backtracking sees both 2 and 4 land in regions tracking has opened; it
+    // takes the nearer one, not the last one in the list.
+    expect(result!.forwardLabels).toEqual(["1"]);
+    expect(result!.backwardLabels).toEqual(["2"]);
+  });
+
+  it("measures goal direction toward the start on the backtracking side", () => {
+    // Goal direction only: C is 100 from S, Y is 365. Measured toward the
+    // target instead, Y would not win either, so flip the geometry: put
+    // the stair-4 landing right next to the start.
+    const moved = nodes.map((n) => (n.id === "Y" ? node("Y", 1, 1) : n.id === "X" ? node("X", 2, 1) : n));
+    const ctx = { ...makeContext(moved, edges), params: { orderingWeights: { nearness: 0, goalDirection: 1 } } };
+    const result = findHumanRoute("S", "T", ctx);
+    const backStep = result!.trace.steps.find((s) => s.side === "backtracking")!;
+    expect(backStep.candidates.map((c) => c.label)).toEqual(["4", "2"]);
+  });
+
+  it("opens a region once when two stairs lead to it", () => {
+    // A second, farther stair between the same two regions as stair 1.
+    const twin: Edge[] = [...edges, { from: "far1", to: "C", label: "5", reverseLabel: "5", ignoreLength: true }];
+    const result = findHumanRoute("S", "T", makeContext(nodes, twin));
+    const first = result!.trace.steps[0];
+    expect(first.candidates[0].label).toBe("1");
+    expect(first.candidates.map((c) => c.label).sort()).toEqual(["1", "3", "5"]);
+    expect(result!.forwardLabels).toEqual(["1"]);
+    // Pending branches after the first glance: one per region, no duplicate.
+    const second = result!.trace.steps[1];
+    const pending = second.memory!.forwardPending.map((p) => p.cluster);
+    expect(new Set(pending).size).toBe(pending.length);
   });
 });

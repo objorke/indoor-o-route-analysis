@@ -24,7 +24,8 @@
  *   --help                      Show help
  */
 import {
-  RouteAnalyzer,
+  type RouteAnalyzer,
+  createEventRouteAnalyzer,
   analyzeCourseLegs,
   getDifficultyCategory,
   getCourseDifficulty,
@@ -204,20 +205,10 @@ Examples:
 // ── Command handlers ────────────────────────────────────────────────────────
 
 function createAnalyzer(event: EventData, scoringModelId: string): RouteAnalyzer {
-  const raceCourse = event.raceCourses?.[0];
-  if (!raceCourse) {
+  if (!event.raceCourses?.[0]) {
     throw new Error("No race course data found in event");
   }
-
-  const controls = raceCourse.controls || [];
-  const vertices = raceCourse.vertices || [];
-  const edges = raceCourse.edges || [];
-  const polygons = raceCourse.polygons || [];
-  const mapScale = raceCourse.maps?.[0]?.scale || 1000;
-
-  const scoringModel = ScoringModelRegistry.getModelOrDefault(scoringModelId);
-
-  return new RouteAnalyzer(controls, vertices, edges, mapScale, scoringModel, polygons);
+  return createEventRouteAnalyzer(event, { scoringModel: ScoringModelRegistry.getModelOrDefault(scoringModelId) });
 }
 
 function handleShortestPath(event: EventData, args: CliArgs): void {
@@ -285,8 +276,7 @@ function handleHumanShortestPath(event: EventData, args: CliArgs): void {
     console.error(
       `No human route found from ${from} to ${to}. Either "${from}"/"${to}" aren't both control IDs ` +
         `(the human-route search only accepts controls, unlike --algorithm shortest which also takes raw node IDs), ` +
-        `or the human-route model couldn't close a plan for this pair (it's tuned for course-leg-scale distances, ` +
-        `not arbitrary long-distance queries — try --algorithm shortest instead for those).`,
+        `or no route exists between them (check with --algorithm shortest).`,
     );
     process.exit(1);
   }

@@ -65,7 +65,7 @@ export default function EventAnalysisInfoDialog({
             <div>
               <p className="font-medium text-foreground mb-1">Recommended Workflow</p>
               <ol className="list-decimal list-inside space-y-1 ml-2">
-                <li>Set up your event with all courses and class assignments in the Event Manager</li>
+                <li>Set up your event with all courses and class assignments in the Event view</li>
                 <li>Enter the expected number of competitors per class</li>
                 <li>Open Event Analysis from the navigation menu</li>
                 <li>Choose a visualization mode (heatmap, thickness, or both) to see traffic patterns</li>

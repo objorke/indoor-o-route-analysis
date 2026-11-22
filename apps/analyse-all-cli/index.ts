@@ -1,6 +1,6 @@
 #!/usr/bin/env tsx
 import type { EventData } from '@indoor-o-route-analysis/core';
-import { analyzeCourseLegs, parseEventFromJSON, RouteAnalyzer, ScoringModelRegistry } from '@indoor-o-route-analysis/core';
+import { analyzeCourseLegs, createEventRouteAnalyzer, parseEventFromJSON, type RouteAnalyzer, ScoringModelRegistry } from '@indoor-o-route-analysis/core';
 import ExcelJS from 'exceljs';
 import * as fs from 'fs';
 import * as path from 'path';
@@ -29,7 +29,7 @@ const TARGET_DIFFICULTY_VALUES: Record<string, number> = {
   white: 20, yellow: 40, orange: 60, purple: 80, black: 100,
 };
 
-const DEFAULT_INPUT_FOLDER = '../web/public/examples';
+const DEFAULT_INPUT_FOLDER = '../../test-data/events';
 const DEFAULT_OUTPUT_FOLDER = '../../output/route-analysis';
 /** Default running speed (m/s) used for estimated running time. Matches the web app default. */
 const DEFAULT_RUNNING_SPEED = 3.0;
@@ -201,7 +201,6 @@ async function run() {
 
     const courses = raceCourse.courses || [];
     const controls = raceCourse.controls || [];
-    const mapScale = raceCourse.maps?.[0]?.scale || 1000;
 
     // The maximum-difficulty leg over all existing controls depends only on the
     // event graph + scoring model, so compute it once per event (per model) and
@@ -210,14 +209,7 @@ async function run() {
     if (findMaxLeg) {
       console.log(`  Scanning for maximum-difficulty leg across ${controls.length} controls...`);
       for (const model of allModels) {
-        const maxAnalyzer = new RouteAnalyzer(
-          controls,
-          raceCourse.vertices || [],
-          raceCourse.edges || [],
-          mapScale,
-          model,
-          raceCourse.polygons || [],
-        );
+        const maxAnalyzer = createEventRouteAnalyzer(event, { scoringModel: model });
         const maxLeg = findMaxDifficultyLeg(maxAnalyzer, controls);
         if (maxLeg) eventMaxPossibleLegs[model.getFullId()] = maxLeg;
       }
@@ -243,14 +235,7 @@ async function run() {
       const legModelDifficulties: { [legIndex: number]: { [modelId: string]: number } } = {};
 
       for (const model of allModels) {
-        const analyzer = new RouteAnalyzer(
-            controls,
-            raceCourse.vertices || [],
-            raceCourse.edges || [],
-            mapScale,
-            model,
-            raceCourse.polygons || []
-        );
+        const analyzer = createEventRouteAnalyzer(event, { scoringModel: model, courseId: course.id });
 
         // Analyze course
         const { legs } = analyzeCourseLegs(course, event, analyzer, false);
@@ -272,14 +257,7 @@ async function run() {
       }
 
       // Build leg results using first model's analyzer for leg metadata
-      const metaAnalyzer = new RouteAnalyzer(
-            controls,
-            raceCourse.vertices || [],
-            raceCourse.edges || [],
-            mapScale,
-            allModels[0],
-            raceCourse.polygons || []
-      );
+      const metaAnalyzer = createEventRouteAnalyzer(event, { scoringModel: allModels[0], courseId: course.id });
       const { legs: metaLegs, routes: metaRoutes } = analyzeCourseLegs(course, event, metaAnalyzer, false);
 
       const courseLength = metaLegs.reduce((sum, leg) => sum + leg.shortestDistance, 0);

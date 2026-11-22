@@ -25,10 +25,9 @@ import * as fs from "fs";
 import * as path from "path";
 import { JSDOM } from "jsdom";
 import {
-  parseEventFromJSON,
   serializeEventToJSON,
   exportEventToIOFXML,
-  parseEventFromIOFXML,
+  parseEventFile,
 } from "@indoor-o-route-analysis/core";
 import type { EventData } from "@indoor-o-route-analysis/core";
 
@@ -133,25 +132,9 @@ function detectOutputFormat(filePath: string): OutputFormat {
 }
 
 function readEvent(filePath: string): EventData {
+  // Same parsing and validation as every other CLI (JSON or IOF XML)
   const content = fs.readFileSync(filePath, "utf-8");
-  const inputFormat = detectInputFormat(filePath);
-
-  if (inputFormat === "json") {
-    return parseEventFromJSON(content);
-  }
-
-  // IOF XML — returns Partial<EventData>, fill in required defaults
-  const partial = parseEventFromIOFXML(content);
-  const event: EventData = {
-    id: partial.id || crypto.randomUUID(),
-    name: partial.name || "Imported Event",
-    startTime: partial.startTime || { date: new Date().toISOString().split("T")[0] },
-    country: partial.country || "",
-    raceCourses: partial.raceCourses,
-    eventUrl: partial.eventUrl,
-    eventImageUrl: partial.eventImageUrl,
-  };
-  return event;
+  return parseEventFile(content, detectInputFormat(filePath));
 }
 
 function escapeCsvField(value: string): string {

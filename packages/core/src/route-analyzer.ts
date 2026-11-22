@@ -28,7 +28,11 @@ import {
   getStairSequence as getStairSequenceUtil,
 } from "./route-labels";
 import { analyzeRoute as analyzeRouteUtil } from "./route-decision-analysis";
-import { findAllAlternativePaths } from "./route-enumeration";
+import {
+  DEFAULT_ROUTE_ENUMERATION_ALGORITHM,
+  enumerateRoutes,
+  type RouteEnumerationAlgorithm,
+} from "./route-enumeration-algorithms";
 import {
   findHumanRoute,
   type HumanRouteSide,
@@ -905,23 +909,34 @@ export class RouteAnalyzer {
    * @param toControlId - Destination control ID
    * @param maxResults - Maximum number of routes to return (default: 1000)
    * @param distanceCutoff - Optional, default off: prune routes beyond ratio*shortest or shortest+absoluteMeters
-   * @returns Array of RouteInfo objects with unique label sequences, sorted by distance
-   * Note: if more than `maxResults` distinct stair sequences exist, only the
-   * `maxResults` shortest are returned (longer sequences are dropped) and a
-   * warning is logged.
+   * @param algorithm - Enumeration algorithm to use (default: the clustered A*
+   * search described above). See route-enumeration-algorithms.ts for the
+   * alternatives — the web app exposes this as Settings → Analysis → Find all
+   * routes algorithm.
+   * @returns Array of RouteInfo objects, sorted by distance (unique label
+   * sequences for `cluster-astar`, distinct simple paths for `dfs`/`bfs`)
+   * Note: if more than `maxResults` routes exist, only the `maxResults`
+   * shortest are returned (longer ones are dropped) and a warning is logged.
    */
   findAllAlternativePathsBetweenControls(
     fromControlId: string,
     toControlId: string,
     maxResults: number = 1000,
     distanceCutoff?: { ratio?: number; absoluteMeters?: number },
+    algorithm: RouteEnumerationAlgorithm = DEFAULT_ROUTE_ENUMERATION_ALGORITHM,
   ): RouteInfo[] {
     const fromNodeId = this.controlNodeMap.get(fromControlId);
     const toNodeId = this.controlNodeMap.get(toControlId);
 
     if (!fromNodeId || !toNodeId) return [];
 
-    const { routes, truncated } = findAllAlternativePaths(fromNodeId, toNodeId, {
+    // The penalised-Dijkstra variant reuses the k-shortest search rather than
+    // the enumeration context, so it is dispatched before the others.
+    if (algorithm === "penalty") {
+      return this.findAlternativePathsBetweenControls(fromControlId, toControlId, maxResults);
+    }
+
+    const { routes, truncated } = enumerateRoutes(algorithm, fromNodeId, toNodeId, {
       edges: this.edges,
       resolveNode: (id) => this.findNodeOrControl(id),
       edgeDistanceMeters: (edge, from, to) => this.calculateEdgeDistanceMeters(edge, from, to),
@@ -938,8 +953,9 @@ export class RouteAnalyzer {
 
     if (truncated) {
       console.warn(
-        `findAllAlternativePathsBetweenControls: hit maxResults (${maxResults}) for ${fromControlId}->${toControlId}; ` +
-        `longer stair sequences were not enumerated. Pass a higher maxResults for full enumeration.`,
+        `findAllAlternativePathsBetweenControls: "${algorithm}" hit its limits (maxResults ${maxResults}) ` +
+        `for ${fromControlId}->${toControlId}; longer routes were not enumerated. ` +
+        `Pass a higher maxResults for fuller enumeration.`,
       );
     }
 

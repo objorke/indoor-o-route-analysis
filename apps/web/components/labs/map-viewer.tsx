@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState, useEffect } from "react";
 import MapViewer, { type MapViewerState, type MapViewerController, eventPosToMultiPagePixels } from "@/components/map-viewer";
-import { useAppData } from "@indoor-o-route-analysis/ui";
+import { useAppData, useSettings } from "@indoor-o-route-analysis/ui";
 import type { MapData } from "@indoor-o-route-analysis/core";
 import type { Control } from "@indoor-o-route-analysis/core";
 import type { Node, Edge } from "@indoor-o-route-analysis/core";
@@ -10,11 +10,12 @@ import {
   CONTROL_RADIUS,
   CONTROL_STROKE_WIDTH,
   COURSE_COLOR,
-  LABS_ROUTE_COLOR,
+  PRIMARY_ROUTE_COLOR,
+  PRIMARY_ROUTE_STROKE_WIDTH,
   HUMAN_OVERLAY_TRACKING_COLOR,
   HUMAN_OVERLAY_BACKTRACKING_COLOR,
 } from "@indoor-o-route-analysis/core";
-import { ControlRenderer, buildRoutePathSegments } from "@indoor-o-route-analysis/ui";
+import { ControlRenderer, buildRoutePathSegments, renderRoutePolylines } from "@indoor-o-route-analysis/ui";
 import { GraphOverlay, HumanRouteOverlay, ClusteredGraphOverlay } from "@/components/shared";
 import type { HumanRouteOverlayState } from "./human-thinking/properties-panel";
 import type { ClusteredGraphState } from "./clustered-graph/properties-panel";
@@ -57,6 +58,7 @@ const MapOverlay = ({
   showNodes?: boolean,
   showEdges?: boolean,
 }) => {
+  const { showControlPoints } = useSettings();
   const lastPannedRouteRef = React.useRef<{ path: string[], distance?: number } | null>(null);
 
   // Fly to the start of the selected leg when it changes
@@ -119,7 +121,7 @@ const MapOverlay = ({
 
       // Styling Constants
       const mainColor = COURSE_COLOR; 
-      const routeColor = LABS_ROUTE_COLOR;
+      const routeColor = PRIMARY_ROUTE_COLOR;
       const _shadowStrokeWidth = CONTROL_STROKE_WIDTH + 2.5;
       const strokeWidth = CONTROL_STROKE_WIDTH;
 
@@ -184,7 +186,7 @@ const MapOverlay = ({
         strokeColor: mainColor,
         showLabel: true,
         label: displayedRoute.fromLabel ?? startCtrl.id,
-        showControlPoint: map?.showControlPoints,
+        showControlPoint: showControlPoints,
       });
       const endCircle = ControlRenderer.renderControl({
         control: endCtrl,
@@ -193,7 +195,7 @@ const MapOverlay = ({
         strokeColor: mainColor,
         showLabel: true,
         label: displayedRoute.toLabel ?? endCtrl.id,
-        showControlPoint: map?.showControlPoints,
+        showControlPoint: showControlPoints,
       });
 
       // Route Polyline (handling ignoreLength/map-segment transitions via the
@@ -214,41 +216,20 @@ const MapOverlay = ({
       // Other labs' single-color route is unaffected (forwardSegmentCount undefined).
       const forwardSegmentCount = displayedRoute.forwardSegmentCount;
 
+      // Solid strong red route, rendered like the best route in Route Analysis.
+      // Human Thinking keeps its blue/amber split so each side's contribution stays visible.
       const routePolylines = (
         <g>
-          {segments.map((seg, i) => {
-              if (seg.points.length < 2) return null;
-              const pts = seg.points.map(p => `${p.x},${p.y}`).join(" ");
-              const segColor = forwardSegmentCount === undefined
-                ? routeColor
-                : (i < forwardSegmentCount ? HUMAN_OVERLAY_TRACKING_COLOR : HUMAN_OVERLAY_BACKTRACKING_COLOR);
-              return (
-                 <g key={i}>
-                    {/* White halo for visibility */}
-                    <polyline
-                        points={pts}
-                        stroke="white"
-                        strokeWidth={7}
-                        strokeOpacity={0.8}
-                        fill="none"
-                        strokeDasharray="6,4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    />
-                    {/* Main dashed line */}
-                    <polyline
-                        points={pts}
-                        stroke={segColor}
-                        strokeWidth={3}
-                        strokeOpacity={0.8}
-                        fill="none"
-                        strokeDasharray="6,4"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                    />
-                 </g>
-              );
-          })}
+          {forwardSegmentCount === undefined
+            ? renderRoutePolylines(segments, { color: routeColor, strokeWidth: PRIMARY_ROUTE_STROKE_WIDTH })
+            : segments.map((seg, i) => (
+                <g key={i}>
+                  {renderRoutePolylines([seg], {
+                    color: i < forwardSegmentCount ? HUMAN_OVERLAY_TRACKING_COLOR : HUMAN_OVERLAY_BACKTRACKING_COLOR,
+                    strokeWidth: PRIMARY_ROUTE_STROKE_WIDTH,
+                  })}
+                </g>
+              ))}
         </g>
       );
 

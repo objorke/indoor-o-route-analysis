@@ -1,5 +1,5 @@
 import type { Control } from "../models/control";
-import type { Edge, Node } from "../models/graph";
+import { edgeLengthOverride, type Edge, type Node } from "../models/graph";
 import type { Polygon } from "../models/polygon";
 import { findPolygonForPoint } from "../polygon-utils";
 import { findDeadEndEdgeIds, edgeKey } from "../utils/graph-utils";
@@ -199,8 +199,8 @@ export function isBranchSignificant(
   const targetPos = findNodePosition(context, targetNodeId);
   if (!startPos || !targetPos) return false;
 
-  let firstDist = 0;
-  if (!firstEdge.ignoreLength) {
+  let firstDist = edgeLengthOverride(firstEdge) ?? 0;
+  if (edgeLengthOverride(firstEdge) === undefined && !firstEdge.ignoreLength) {
     firstDist = Math.hypot(targetPos.x - startPos.x, targetPos.y - startPos.y) * context.mapScale * MM_TO_METERS;
   }
 
@@ -232,8 +232,8 @@ export function isBranchSignificant(
       const toPos = findNodePosition(context, nextId);
       if (!fromPos || !toPos) continue;
 
-      let edgeDist = 0;
-      if (!edge.ignoreLength) {
+      let edgeDist = edgeLengthOverride(edge) ?? 0;
+      if (edgeLengthOverride(edge) === undefined && !edge.ignoreLength) {
         edgeDist = Math.hypot(toPos.x - fromPos.x, toPos.y - fromPos.y) * context.mapScale * MM_TO_METERS;
       }
 

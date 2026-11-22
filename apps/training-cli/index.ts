@@ -7,14 +7,14 @@
  *
  * Arguments:
  *   fileFilter:    Optional substring filter — only files containing this string are processed (default: all files)
- *   inputFolder:   Default: ../web/public/examples
+ *   inputFolder:   Default: ../../test-data/events
  *   outputFolder:  Default: ../../output/training-data
  *   --k <n>:       Max routes (per-leg cap) for the "show all routes" enumeration (default: 50)
  *   --verbose:     Print number of routes found for each leg in each course
  *
  * Examples:
  *   npx tsx index.ts 2026
- *   npx tsx index.ts "" ../web/public/examples ../../output/training-data
+ *   npx tsx index.ts "" ../../test-data/events ../../output/training-data
  *   npx tsx index.ts --k 50 --verbose
  *
  * Each run overwrites the files directly in the output folder, and
@@ -31,13 +31,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { parseEventFromJSON } from '@indoor-o-route-analysis/core';
 import { TrainingDataIO, type TrainingCourse, type TrainingEvent } from '@indoor-o-route-analysis/core';
-import { RouteAnalyzer } from '@indoor-o-route-analysis/core';
+import { createEventRouteAnalyzer, getEventScoringModel } from '@indoor-o-route-analysis/core';
 import { analyzeCourseLegs } from '@indoor-o-route-analysis/core';
-import { ScoringModelRegistry } from '@indoor-o-route-analysis/core';
 import type { EventData } from '@indoor-o-route-analysis/core';
 
 // Default folders
-const DEFAULT_INPUT_FOLDER = '../web/public/examples';
+const DEFAULT_INPUT_FOLDER = '../../test-data/events';
 const DEFAULT_OUTPUT_FOLDER = '../../output/training-data';
 
 // Parse command line arguments: separate named flags from positional args
@@ -131,18 +130,8 @@ function processEventFile(filePath: string): { trainingEvent: TrainingEvent; rep
   const courses = raceCourse.courses || [];
   if (courses.length === 0) throw new Error('No courses found in event');
 
-  const map = raceCourse.maps?.[0];
-  const mapScale = map?.scale || 1000;
-  const scoringModel = ScoringModelRegistry.getModelOrDefault(event.difficultyScoringModel);
-
-  const routeAnalyzer = new RouteAnalyzer(
-    raceCourse.controls || [],
-    raceCourse.vertices || [],
-    raceCourse.edges || [],
-    mapScale,
-    scoringModel,
-    raceCourse.polygons || []
-  );
+  const scoringModel = getEventScoringModel(event);
+  const routeAnalyzer = createEventRouteAnalyzer(event, { scoringModel });
 
   const analyzedCourses: TrainingCourse[] = [];
   const courseReports: CourseReport[] = [];
